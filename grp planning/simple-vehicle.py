@@ -164,7 +164,7 @@ try:
         global current_path
         while not agent.done():
             with planner_lock:
-                route = grp.trace_route(point_a, point_b, world)
+                route = grp.trace_route(point_a, point_b)
 
                 for wp, _ in route:
                     rhs[wp.id] = 0.0
