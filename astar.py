@@ -32,12 +32,14 @@ def get_legal_neighbors(waypoint):
         left_lane = waypoint.get_left_lane()
         if left_lane and left_lane.lane_type == carla.LaneType.Driving:
             neighbors.append(left_lane)
+            neighbors.append(left_lane.next(2.0)[0])
     
     # Legal right lane change
     if waypoint.lane_change & carla.LaneChange.Right:
         right_lane = waypoint.get_right_lane()
         if right_lane and right_lane.lane_type == carla.LaneType.Driving:
             neighbors.append(right_lane)
+            neighbors.append(right_lane.next(2.0)[0])
     
     return neighbors
 
@@ -67,9 +69,8 @@ def a_star(world, start_waypoint, end_waypoint, heuristic_func=euclidean_heurist
         #     return None
         
         for next_waypoint in get_legal_neighbors(current_node.waypoint):
-            # world.debug.draw_string(next_waypoint.transform.location, '^', draw_shadow=False, color=carla.Color(r=220, g=0, b=220), life_time=60.0, persistent_lines=True)
             # Add a small cost for lane changes
-            lane_change_cost = 5 if next_waypoint.lane_id != current_node.waypoint.lane_id else 0
+            lane_change_cost = 0 if next_waypoint.lane_id != current_node.waypoint.lane_id else 0
 
             # tentative = g score + heuristic + lane change cost
             # This sum gives us the total cost to reach the next waypoint from the start,
@@ -97,7 +98,7 @@ def a_star(world, start_waypoint, end_waypoint, heuristic_func=euclidean_heurist
 def main():
     try:
         # Connect to the CARLA server
-        client = carla.Client('localhost', 4000)
+        client = carla.Client('localhost', 2000)
         client.set_timeout(10.0)
         # world = client.load_world('Town05') # Use this to switch towns
         # Get the world and map
@@ -112,10 +113,12 @@ def main():
 
         # Choose a random starting location (point A)
         point_a = random.choice(spawn_points)
+        point_a = spawn_points[50]
         firetruck = world.spawn_actor(firetruck_bp, point_a)
 
         # Choose a random destination (point B)
         point_b = random.choice(spawn_points)
+        point_b = spawn_points[100]
         while point_b.location == point_a.location:
             point_b = random.choice(spawn_points)
 
