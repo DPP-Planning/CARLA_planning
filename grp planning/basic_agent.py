@@ -230,21 +230,43 @@ class BasicAgent(object):
         # the obstacles as information but just passes it on to the algorthim, such that it can
         # be simulated that the algorithm is working with a new iteration of the map its developing
         # an algorithm on.
+        # if type(end_location) is not list:
+        #     if not start_location:
+        #         start_location = self._local_planner.target_waypoint.transform.location
+        #         # start_location = self._vehicle.get_location()
+        #         clean_queue = True
+        #     else:
+        #         start_location = self._vehicle.get_location()
+        #         clean_queue = False
 
-        if not start_location:
-            start_location = self._local_planner.target_waypoint.transform.location
-            # start_location = self._vehicle.get_location()
-            clean_queue = True
+        #     start_waypoint = self._map.get_waypoint(start_location)
+        #     print("basic_agent start location: " , start_location)
+        #     end_waypoint = self._map.get_waypoint(end_location)
+        #     self._destination = end_location
+
+        #     route_trace = self.trace_route(start_waypoint, end_waypoint, new_obstacle)
+        # else:
+        #     route_trace = end_location
+        #     clean_queue = True
+
+        if type(end_location) is not list:
+            if not start_location:
+                start_location = self._local_planner.target_waypoint.transform.location
+                # start_location = self._vehicle.get_location()
+                clean_queue = True
+            else:
+                start_location = self._vehicle.get_location()
+                clean_queue = False
+
+            start_waypoint = self._map.get_waypoint(start_location)
+            print("basic_agent start location: " , start_location)
+            end_waypoint = self._map.get_waypoint(end_location)
+            self._destination = end_location
+
+            route_trace = self.trace_route(start_waypoint, end_waypoint, new_obstacle)
         else:
-            start_location = self._vehicle.get_location()
-            clean_queue = False
-
-        start_waypoint = self._map.get_waypoint(start_location)
-        print("basic_agent start location: " , start_location)
-        end_waypoint = self._map.get_waypoint(end_location)
-        self._destination = end_location
-
-        route_trace = self.trace_route(start_waypoint, end_waypoint, new_obstacle)
+            route_trace = end_location
+            clean_queue = True
 
         # route trace is a list of routes
         # these now have to be connected via lane change links.

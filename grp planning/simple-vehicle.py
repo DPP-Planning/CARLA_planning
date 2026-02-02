@@ -164,11 +164,13 @@ try:
         global current_path
         while not agent.done():
             with planner_lock:
-                route = grp.trace_route(point_a, point_b)
+                route = grp.trace_route(vehicle.get_location(), point_b, world)
+                print ('route waypoints:', route)
 
-                for wp, _ in route:
-                    rhs[wp.id] = 0.0
-                    g[wp.id] = min(g[wp.id], rhs[wp.id] + 1.0)
+                for wp_list in route:
+                    for wp, _ in wp_list:
+                        rhs[wp.id] = 0.0
+                        g[wp.id] = min(g[wp.id], rhs[wp.id] + 1.0)
 
                 current_path = route
                 new_path_event.set()
@@ -187,8 +189,38 @@ try:
         
         if new_path_event.is_set():
             with planner_lock:
-                agent.set_global_plan(current_path)
+                agent.set_destination(current_path)
                 new_path_event.clear()
+
+    # def planner_thread_fn():
+    #     global current_path
+    #     while not agent.done():
+    #         with planner_lock:
+    #             route = grp.trace_route(amap.get_waypoint(vehicle.get_location()), amap.get_waypoint(point_b), world)
+    #             for 
+    #             for wp, _ in route:
+    #                 rhs[wp.id] = 0.0
+    #                 g[wp.id] = min(g[wp.id], rhs[wp.id] + 1.0)
+
+    #             current_path = route
+    #             new_path_event.set()
+
+    #         time.sleep(0.5)
+
+    # planner_thread = threading.Thread(
+    #     target=planner_thread_fn, daemon=True
+    # )
+    # planner_thread.start()
+
+    # while True:
+    #     if agent.done():
+    #         print("The target has been reached, stopping the simulation")
+    #         break
+        
+    #     if new_path_event.is_set():
+    #         with planner_lock:
+    #             agent.set_global_plan(current_path)
+    #             new_path_event.clear()
 
         control = agent.run_step()
         vehicle.apply_control(control)
