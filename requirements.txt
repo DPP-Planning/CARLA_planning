@@ -1,0 +1,13 @@
+# CARLA Python API
+# Note: The carla package is typically installed from the CARLA release
+# If using CARLA 0.9.13 or later, you can install via pip:
+# carla==0.9.13
+
+# Core dependencies
+numpy>=1.19.0
+pygame>=2.0.0
+networkx>=2.5
+shapely>=1.7.1
+
+# Additional useful packages
+matplotlib>=3.3.0

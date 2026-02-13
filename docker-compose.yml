@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # CARLA Simulator Server
+  carla-server:
+    image: carlasim/carla:0.9.13
+    container_name: carla-server
+    command: /bin/bash -c "SDL_VIDEODRIVER=offscreen ./CarlaUE4.sh -opengl -carla-rpc-port=2000 -quality-level=Low -RenderOffScreen"
+    ports:
+      - "4000:2000"  # Map host port 4000 to container port 2000 for compatibility
+      - "4001:2001"
+      - "4002:2002"
+    networks:
+      - carla-network
+    environment:
+      - DISPLAY=
+    restart: unless-stopped
+    # Uncomment below if you want to use GPU
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # CARLA Planning Client
+  carla-client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: carla-planning-client
+    depends_on:
+      - carla-server
+    networks:
+      - carla-network
+    environment:
+      - CARLA_HOST=carla-server
+      - CARLA_PORT=2000
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount source code for development
+      - ./grp planning:/app/grp planning
+      - ./dLite:/app/dLite
+    # Wait for CARLA server to be ready
+    entrypoint: /bin/bash -c "echo 'Waiting for CARLA server...' && sleep 10 && python 'grp planning/simple-vehicle.py'"
+    stdin_open: true
+    tty: true
+
+  # Test service to verify setup
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: carla-test
+    depends_on:
+      - carla-server
+    networks:
+      - carla-network
+    environment:
+      - CARLA_HOST=carla-server
+      - CARLA_PORT=2000
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./test_docker_setup.py:/app/test_docker_setup.py
+    command: python test_docker_setup.py
+    profiles:
+      - test
+
+networks:
+  carla-network:
+    driver: bridge

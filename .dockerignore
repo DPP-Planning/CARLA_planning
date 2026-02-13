@@ -1,0 +1,60 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation
+*.md
+!README.md
+*.pdf
+
+# Docker (these shouldn't be in the image)
+Dockerfile
+docker-compose.yml
+.dockerignore
+.env
+.env.example
+run-docker.sh
+run-docker.bat
+
+# Logs and temporary files
+*.log
+dstar.log
+*.tmp
+
+# Cache
+.cache/
+.pytest_cache/
+
+# Test files (optional - include if you don't want tests in container)
+test_*.py
+*_test.py
+Testing.md

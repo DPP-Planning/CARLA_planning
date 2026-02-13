@@ -103,13 +103,20 @@ import sys
 import threading
 import time
 import random
+import os
 from collections import defaultdict
 
 sys.path.append('../')
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 from agents.navigation.basic_agent import BasicAgent
 
-client = carla.Client("localhost", 4000)
+# Get CARLA connection details from environment variables (useful for Docker)
+CARLA_HOST = os.getenv('CARLA_HOST', 'localhost')
+CARLA_PORT = int(os.getenv('CARLA_PORT', '4000'))
+
+print(f"Connecting to CARLA server at {CARLA_HOST}:{CARLA_PORT}")
+
+client = carla.Client(CARLA_HOST, CARLA_PORT)
 client.set_timeout(10)
 world = client.get_world()
 amap = world.get_map()
