@@ -140,11 +140,14 @@ class BasicAgent(object):
         self._offset = 0
         self._destination = None
         self._previous_obstacle = None
+        self._prev_obs = False
 
         # Lane Change
-        self._wait_wp = None
-        self._prev_obs = False
-        self._prev_environment = None
+        self._lc_attempts = 0
+        self._prev_lane = -1
+        self._debug = False
+        self._detour_obs = None
+        self._route_color = carla.Color(r=0, b=255, g=0)
 
         # Change parameters according to the dictionary
         opt_dict['target_speed'] = target_speed
@@ -251,6 +254,15 @@ class BasicAgent(object):
         end_waypoint = self._map.get_waypoint(end_location)
         self._destination = end_location
 
+        if self._debug:
+            self._world.debug.draw_string(start_waypoint.transform.location, 'START', draw_shadow=False,
+                    color=carla.Color(r=0, g=255, b=255), life_time=5.0,
+                    persistent_lines=True)
+            self._world.debug.draw_string(end_waypoint.transform.location, 'END', draw_shadow=False,
+                    color=carla.Color(r=0, g=255, b=255), life_time=5.0,
+                    persistent_lines=True)
+
+
         route_trace = self.trace_route(start_waypoint, end_waypoint, new_obstacle)
 
         # route trace is a list of routes
@@ -276,8 +288,6 @@ class BasicAgent(object):
         # Applied bezier curve to route
         use_bezier = False
 
-        self._wait_wp = None
-
         for i in range(len(route_trace)):
             if (i != len(route_trace) - 1):
                 yaw = route_trace[i][-1][0].transform.rotation.yaw
@@ -286,38 +296,43 @@ class BasicAgent(object):
                 # extended end for bezier curves
 
                 wp_min_distance = 1
-                wp_starting_distance = 3
+                wp_starting_distance = 2
                 wp_distance = wp_starting_distance
-                print(" - checking for collisions")
-                collisions = get_projected_collisions(self._world, self._vehicle, route_trace[i + 1][wp_distance][0], debug=False)
-                print(" - {} collisions found".format(len(collisions)))
 
-                j = 0
+                # print(" - checking for collisions")
+                collisions = get_projected_collisions(self._world, self._vehicle, route_trace[i + 1][wp_distance][0], debug=True)
+                # print(" - {} collisions found".format(len(collisions)))
 
                 while len(collisions) > 0:
                     print(" - detected collision at lane change head, moving route head...")
 
                     wp_distance -= 1
 
+
                     if wp_distance == wp_min_distance:
 
                         print(" - minimum head distance reached, waiting for obstacle to clear...")
                         wp_distance = wp_starting_distance
-                        vehicle_wp = self._map.get_waypoint(self._vehicle.bounding_box.location)
-                        self._wait_wp = vehicle_wp
+                        # vehicle_wp = self._map.get_waypoint(self._vehicle.bounding_box.location)
+                        self._detour_obs = collisions[0]
+                        detour_wp = self._map.get_waypoint(self._detour_obs.bounding_box.location)
 
-                        break
+                        if self._debug:
+                            self._world.debug.draw_string(detour_wp.transform.location, 'Detour Blocker', draw_shadow=False,
+                            color=carla.Color(r=255, g=0, b=255), life_time=15.0,
+                            persistent_lines=True)
 
-                    collisions = get_projected_collisions(self._world, self._vehicle, route_trace[i + 1][wp_distance][0], debug=True)
+                        return
+
+                    collisions = get_projected_collisions(self._world, self._vehicle, route_trace[i + 1][wp_distance][0], debug=False)
                     print(" - {} collisions found".format(len(collisions)))
-
-                    j += 1
 
                 x_2, y_2 = route_trace[i + 1][wp_distance][0].transform.location.x, route_trace[i + 1][0][0].transform.location.y
 
                 # x_2, y_2 = route_trace[i + 1][3][0].transform.location.x, route_trace[i + 1][0][0].transform.location.y
 
                 # Bezier cruves
+                assert(route_trace[i+1])
                 p0 = loc_to_vec(route_trace[i][-1][0].transform.location) 
                 p1 = np.array([x_1 + (x_2 - x_1) * 0.75, y_1 + (y_2 - y_1) * 0.0, 0.0]) # control point
                 p2 = np.array([x_2 - (x_2 - x_1) * 0.75, y_2 - (y_2 - y_1) * 0.0, 0.0]) # control point
@@ -424,12 +439,13 @@ class BasicAgent(object):
                 if isinstance(next_fr, carla.Location): 
                     next_loc = next_fr
 
-            self._world.debug.draw_line(
-                curr_loc, next_loc,
-                thickness=0.25,
-                color=carla.Color(r=0, g=0, b=50, a=150),
-                life_time=2.0
-            )
+            if self._debug:
+                self._world.debug.draw_line(
+                    curr_loc, next_loc,
+                    thickness=0.25,
+                    color=self._route_color,
+                    life_time=15.0
+                )
 
         #print("set_destination: ", final_route)
         print(f"Jaggedness:", jaggedness(final_route))
@@ -468,6 +484,62 @@ class BasicAgent(object):
 
         return self._global_planner.trace_route(start_location, end_location, self._world, new_obstacle)
 
+    def _vehicle_obstacle_detected_collider(self, wp_lookahead=1):
+        lookahead = wp_lookahead
+
+        # Avoid looking for waypoints past queue end
+        while len(self._local_planner._waypoints_queue) <= lookahead:
+            lookahead = lookahead - 1
+            if lookahead == 0: return False, None
+
+        # Check each waypoint between lookahead and vehicle
+
+        vehicle_wpt = self._map.get_waypoint(self._vehicle.get_location())
+        collisions = get_projected_collisions(self._world, self._vehicle, vehicle_wpt, min_distance=0.7, debug=self._debug)
+
+        for i in range(lookahead):
+            target_wpt = self._local_planner._waypoints_queue[lookahead][0]
+
+            obstacles = get_projected_collisions(self._world, self._vehicle, target_wpt, min_distance=0.7, debug=self._debug)
+            collisions += obstacles
+
+        # if we find any obstacles, return the first one's waypoint
+
+        if len(collisions) > 0:
+                return True, self._map.get_waypoint(collisions[0].get_location())
+
+        return False, None
+
+        # target_wpt = self._local_planner._waypoints_queue[lookahead][0]
+
+        # collisions = get_projected_collisions(self._world, self._vehicle, target_wpt, min_distance=0.7, debug=self._debug)
+
+        # if len(collisions) > 0:
+        #     return True, self._map.get_waypoint(collisions[0].get_location())
+        # else:
+        #     return False, None
+
+    def _at_junction(self, wp_lookahead=2):
+        wpts = [self._map.get_waypoint(self._vehicle.get_location())]
+
+        lookahead = wp_lookahead
+
+        while len(self._local_planner._waypoints_queue) <= lookahead:
+            lookahead = lookahead - 1
+            if lookahead == 0:
+                break
+
+        if lookahead > 0:
+            for i in range(wp_lookahead):
+                wpts.append(self._local_planner._waypoints_queue[lookahead][0])
+
+        for w in wpts:
+            if w.is_junction:
+                return True
+
+        return False
+
+
     def run_step(self):
         """Execute one step of navigation."""
         # Two hazard detection booleans to avoid replanning just for the sake of
@@ -489,7 +561,8 @@ class BasicAgent(object):
         max_vehicle_distance = self._base_vehicle_threshold + self._speed_ratio * vehicle_speed
         # max_vehicle_distance = 25
         max_vehicle_distance = 10
-        affected_by_vehicle, _, _, obstacle_wpt = self._vehicle_obstacle_detected(vehicle_list, max_vehicle_distance)
+        #affected_by_vehicle, _, _, obstacle_wpt = self._vehicle_obstacle_detected(vehicle_list, max_vehicle_distance)
+        affected_by_vehicle, obstacle_wpt = self._vehicle_obstacle_detected_collider(wp_lookahead=1)
         if affected_by_vehicle:
             hazard_obstacle = True
 
@@ -499,47 +572,48 @@ class BasicAgent(object):
         if affected_by_tlight:
             hazard_light = True
 
+        # Current Waypoint
+        curr_wpt = self._map.get_waypoint(self._vehicle.get_location())
+
+        # Did we just perform a successful lane change?
+        current_lane = curr_wpt.lane_id
+        if self._prev_lane != current_lane:
+            self._lc_attempts = 0
+
         control = self._local_planner.run_step()
 
-        # If we can't proceed on the expected path
         if hazard_obstacle:
             print (" - Obstacle detected, entered obstacle resolution")
 
-            # if self._previous_obstacle != obstacle_wpt:
-            if self._previous_obstacle == None or self._previous_obstacle.transform.location.distance(obstacle_wpt.transform.location) > 0.5:
-                # Hazard has not been accounted for...
-                print ("   - Replanning around obstacle: ", obstacle_wpt.transform.location)
-                control = self.add_emergency_stop(control)
-                self._previous_obstacle = obstacle_wpt
-                # print ("   - Entering set destination")
+            control = self.add_emergency_stop(control)
 
-                self.set_destination(self._destination, None, obstacle_wpt)
-                # print ("   - Exiting set destination, route planned")
+            #if not curr_wpt.is_junction:
+            if not self._at_junction():
 
-                self._world.debug.draw_string(obstacle_wpt.transform.location, 'Obstacle', draw_shadow=False,
-                color=carla.Color(r=255, g=0, b=0), life_time=15.0,
-                persistent_lines=True)
-            else:
-                # If hazard has been accounted for..
-                print("   - Replanning skipped")
-                if self._wait_wp != None:
-                    print("     - Wait indicator detected. Waiting...")
-                    # if lane head is occupied...
+                # if self._previous_obstacle != obstacle_wpt:
+                if self._previous_obstacle == None or self._previous_obstacle.transform.location.distance(obstacle_wpt.transform.location) > 0.5:
+                    print ("   - Replanning around obstacle: ", obstacle_wpt.transform.location)
 
-                    # Stop the vehicle and run set destination again to see if head is still occupied.
-                    control = self.add_emergency_stop(control)
-                    self.set_destination(self._destination, None, obstacle_wpt)
-                else:
-                    print("     - Following planned route.")
+                    # Debug
+                    # if self._debug:
+                    self._world.debug.draw_string(obstacle_wpt.transform.location, 'Obstacle', draw_shadow=False,
+                        color=carla.Color(r=255, g=0, b=0), life_time=15.0,
+                        persistent_lines=True)
+
+                    # Emergency Stop
+
+                    with open("out/basic_agent.log", "a") as f:
+                        f.write(f"Agent {self._vehicle.id}\n")
+
+                    if self._lc_attempts < 1:
+                        self.set_destination(self._destination, None, obstacle_wpt)
+                        self._lc_attempts = self._lc_attempts + 1
+                        self._previous_obstacle = obstacle_wpt
 
         elif hazard_obstacle and hazard_light:
             control = self.add_emergency_stop(control)
 
-        # elif self._prev_obs != hazard_obstacle and hazard_obstacle == False:
-        #     control = self.add_emergency_stop(control)
-        #     self.set_destination(self._destination, None, None)
-
-        self._prev_obs = hazard_obstacle
+        self._prev_lane = self._map.get_waypoint(self._vehicle.get_location()).lane_id
 
         return control
 

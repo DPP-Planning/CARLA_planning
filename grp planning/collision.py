@@ -5,7 +5,6 @@ import random
 from queue import PriorityQueue
 import time
 import math
-from agents.navigation.basic_agent import bb_is_intercepting
 
 class car_mesh:
 	"""
@@ -18,26 +17,32 @@ class car_mesh:
 		self.center = transform
 		self.world = world
 		self.corners = [ loc for loc in actor.bounding_box.get_world_vertices(self.center)[1::2]]
+		self.bb = actor.bounding_box
 
 	def get_min_distance(self, mesh):
 		min_distance = float('inf')
 
 		for c in mesh.corners:
-			for i in self.corners:
-				min_distance = min(min_distance, euclidian_distance_2d(c, i))
+			# Check if intersecting
+			if euclidian_distance_2d(c, self.center.location) < self.bb.extent.x:
+				return 0.0
+			# Check if colliding
+			else:
+				for i in self.corners:
+					min_distance = min(min_distance, euclidian_distance_2d(c, i))
 
-		return min_distance
+				return min_distance
 
 	def print_vertices(self):
 		print("Actor Mesh {}".format(self.id))
 		for v in self.corners:
 			print(" - (X: {}, Y:{})".format(v.x, v.y))
 
-	def draw_mesh(self, life_time=0.5):
-		self.world.debug.draw_line(self.corners[0], self.corners[2], thickness=0.25, color=carla.Color(r=0, g=0, b=50, a=150), life_time=life_time)
-		self.world.debug.draw_line(self.corners[2], self.corners[3], thickness=0.25, color=carla.Color(r=0, g=0, b=50, a=150), life_time=life_time)
-		self.world.debug.draw_line(self.corners[3], self.corners[1], thickness=0.25, color=carla.Color(r=0, g=0, b=50, a=150), life_time=life_time)
-		self.world.debug.draw_line(self.corners[1], self.corners[0], thickness=0.25, color=carla.Color(r=0, g=0, b=50, a=150), life_time=life_time)
+	def draw_mesh(self, life_time=5.0, color=carla.Color(r=100, g=0, b=0, a=150)):
+		self.world.debug.draw_line(self.corners[0], self.corners[2], thickness=0.15, color=color, life_time=life_time)
+		self.world.debug.draw_line(self.corners[2], self.corners[3], thickness=0.15, color=color, life_time=life_time)
+		self.world.debug.draw_line(self.corners[3], self.corners[1], thickness=0.15, color=color, life_time=life_time)
+		self.world.debug.draw_line(self.corners[1], self.corners[0], thickness=0.15, color=color, life_time=life_time)
 
 def handle_collision(data):
 	print("* Collision Detected! *")
@@ -84,7 +89,7 @@ def get_collisions(world, actor, min_distance=0.7):
 
 	return collisions
 
-def get_projected_collisions(world, actor, waypoint, min_distance=0.7):
+def get_projected_collisions(world, actor, waypoint, min_distance=0.7, max_distance=20, debug=False):
 	""""
 	Use the next waypoint from astar coupled with actor to build a projected bouding box.
 	"""
@@ -92,8 +97,8 @@ def get_projected_collisions(world, actor, waypoint, min_distance=0.7):
 	projected_transform = waypoint.transform
 
 	actor_mesh = car_mesh(world, actor, projected_transform)
-	#actor_mesh.draw_mesh()
-	other_actors = list(world.get_actors())
+	#other_actors = list(world.get_actors())
+	other_actors = [a for a in list(world.get_actors()) if euclidian_distance_2d(a.get_location(), actor.get_location()) <= max_distance]
 
 	for act in other_actors:
 		if act.id == actor.id:
@@ -108,10 +113,13 @@ def get_projected_collisions(world, actor, waypoint, min_distance=0.7):
 
 			dist = actor_mesh.get_min_distance(obs_mesh)
 
-			if (dist < min_distance):
-				# obs_mesh.draw_mesh()
-				# actor_mesh.draw_mesh()
-				collisions.append(obs.id)
+			if dist < min_distance:
+				if debug: obs_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=100, g=0, b=0, a=50))
+				if debug: actor_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=100, g=100, b=0, a=50))
+				collisions.append(obs)
+
+	if len(collisions) == 0:
+		if debug: actor_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=0, g=100, b=0, a=50))
 
 	return collisions
 
