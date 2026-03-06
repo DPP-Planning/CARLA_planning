@@ -97,15 +97,23 @@
 #     destroyed_sucessfully = vehicle.destroy()
 #     destroyed_sucessfully = vehicle_2.destroy()
 #=================================================================================
-
-import carla
 import sys
+sys.path.append('../../CARLA_0.9.15/WindowsNoEditor/PythonAPI/carla')
+sys.path.append('C:\\Users\\ujwal\\Downloads\\CARLA_planning\\.venv\\lib\\site-packages')
+sys.path.append('C:\\Users\\ujwal\\Downloads\\CARLA_planning\\.venv')
+print(f"system path: {sys.path}")
+
+import networkx
+import carla
 import threading
 import time
 import random
 from collections import defaultdict
 
-sys.path.append('../')
+'''
+sys.path.append('../../CARLA_0.9.15/WindowsNoEditor/PythonAPI/carla')
+print(f"system path: {sys.path}")
+'''
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 from agents.navigation.basic_agent import BasicAgent
 
@@ -189,7 +197,8 @@ try:
         
         if new_path_event.is_set():
             with planner_lock:
-                agent.set_destination(current_path)
+                print(f"current path: {point_b}")
+                agent.set_destination(point_b)
                 new_path_event.clear()
 
     # def planner_thread_fn():
