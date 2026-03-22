@@ -554,24 +554,7 @@ class BasicAgent(object):
         max_tlight_distance = self._base_tlight_threshold + self._speed_ratio * vehicle_speed
         affected_by_tlight, _ = self._affected_by_traffic_light(self._lights_list, max_tlight_distance)
         if affected_by_tlight:
-            hazard_light = True
-
-        # lane_change_collisions = []
-
-        # if self._lane_head:
-        #
-        #     if self._debug:
-        #         self._world.debug.draw_string(self._lane_head.transform.location, 'LANE HEAD', draw_shadow=False,
-        #             color=carla.Color(r=255, g=255, b=0), life_time=1.0,
-        #             persistent_lines=True)
-        #
-        #     # If there is a lane change, look for collisions at lane head.
-        #     lane_change_collisions = get_projected_collisions(self._world, self._vehicle, self._lane_head, debug=self._debug)
-        #
-        #     if self._lane_head == self._map.get_waypoint(self._vehicle.get_location()):
-        #         # Reset lane head and lane change attempt counter when we successfully lane change.
-        #         self._lane_head = None
-        #         self._attempts = 0
+            hazard_light = Trues
 
         # Did we just perform a successful lane change?
         current_lane = self._map.get_waypoint(self._vehicle.get_location()).lane_id
