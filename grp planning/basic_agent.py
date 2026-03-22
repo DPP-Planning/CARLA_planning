@@ -554,7 +554,7 @@ class BasicAgent(object):
         max_tlight_distance = self._base_tlight_threshold + self._speed_ratio * vehicle_speed
         affected_by_tlight, _ = self._affected_by_traffic_light(self._lights_list, max_tlight_distance)
         if affected_by_tlight:
-            hazard_light = Trues
+            hazard_light = True
 
         # Did we just perform a successful lane change?
         current_lane = self._map.get_waypoint(self._vehicle.get_location()).lane_id
