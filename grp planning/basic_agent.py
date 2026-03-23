@@ -144,7 +144,6 @@ class BasicAgent(object):
         self._prev_obs = False
 
         # Lane Change
-        self._lane_head = None
         self._lc_attempts = 0
         self._prev_lane = -1
         self._debug = False
@@ -240,26 +239,46 @@ class BasicAgent(object):
         # the obstacles as information but just passes it on to the algorthim, such that it can
         # be simulated that the algorithm is working with a new iteration of the map its developing
         # an algorithm on.
+        #
+        # if not start_location:
+        #     start_location = self._local_planner.target_waypoint.transform.location
+        #     # start_location = self._vehicle.get_location()
+        #     clean_queue = True
+        # else:
+        #     start_location = self._vehicle.get_location()
+        #     clean_queue = False
+        #
+        # start_waypoint = self._map.get_waypoint(start_location)
+        # print("basic_agent start location: " , start_location)
+        # end_waypoint = self._map.get_waypoint(end_location)
+        # self._destination = end_location
+        #
+        # if self._debug:
+        #     self._world.debug.draw_string(start_waypoint.transform.location, 'START', draw_shadow=False,
+        #     color=carla.Color(r=255, g=255, b=0), life_time=5.0,
+        #     persistent_lines=True)
+        #
+        # route_trace = self.trace_route(start_waypoint, end_waypoint, new_obstacle)
 
-        if not start_location:
-            start_location = self._local_planner.target_waypoint.transform.location
-            # start_location = self._vehicle.get_location()
-            clean_queue = True
+        if type(end_location) is not list:
+            if not start_location:
+                start_location = self._local_planner.target_waypoint.transform.location
+                # start_location = self._vehicle.get_location()
+                clean_queue = True
+            else:
+                start_location = self._vehicle.get_location()
+                clean_queue = False
+
+            start_waypoint = self._map.get_waypoint(start_location)
+            print("basic_agent start location: " , start_location)
+            end_waypoint = self._map.get_waypoint(end_location)
+            self._destination = end_location
+
+            route_trace = self.trace_route(start_waypoint, end_waypoint, new_obstacle)
         else:
-            start_location = self._vehicle.get_location()
-            clean_queue = False
+            route_trace = end_location
+            clean_queue = True
 
-        start_waypoint = self._map.get_waypoint(start_location)
-        print("basic_agent start location: " , start_location)
-        end_waypoint = self._map.get_waypoint(end_location)
-        self._destination = end_location
-
-        if self._debug:
-            self._world.debug.draw_string(start_waypoint.transform.location, 'START', draw_shadow=False,
-            color=carla.Color(r=255, g=255, b=0), life_time=5.0,
-            persistent_lines=True)
-
-        route_trace = self.trace_route(start_waypoint, end_waypoint, new_obstacle)
 
         # route trace is a list of routes
         # these now have to be connected via lane change links.
@@ -318,8 +337,6 @@ class BasicAgent(object):
                     print(" - {} collisions found".format(len(collisions)))
 
                     j += 1
-
-                self._lane_head = route_trace[1][-1][0]
 
                 x_2, y_2 = route_trace[i + 1][wp_distance][0].transform.location.x, route_trace[i + 1][0][0].transform.location.y
 
@@ -485,16 +502,18 @@ class BasicAgent(object):
             if lookahead == 0: return False, None
 
         # collisions = []
+        collisions = get_projected_collisions_2(self._world, self._vehicle, self._map.get_waypoint(self._vehicle.get_location()))
 
-        # for i in range(lookahead):
-        #     target_wpt = self._local_planner._waypoints_queue[i][0]
-        #     col = get_projected_collisions_2(self._world, self._vehicle, target_wpt, debug=self._debug)
-        #     for c in col:
-        #         if c not in collisions:
-        #             collisions.append(c)
+        # for i in range(lookahead, 0, -1):
+        for i in range(0, lookahead):
+            target_wpt = self._local_planner._waypoints_queue[i][0]
+            col = get_projected_collisions_2(self._world, self._vehicle, target_wpt, debug=self._debug)
+            for c in col:
+                if c not in collisions:
+                    collisions.append(c)
 
-        target_wpt = self._local_planner._waypoints_queue[lookahead][0]
-        collisions = get_projected_collisions_2(self._world, self._vehicle, target_wpt, debug=self._debug)
+        # target_wpt = self._local_planner._waypoints_queue[lookahead][0]
+        # collisions = get_projected_collisions_2(self._world, self._vehicle, target_wpt, debug=self._debug)
 
         if len(collisions) > 0:
             return True, self._map.get_waypoint(collisions[0].get_location())
@@ -545,7 +564,7 @@ class BasicAgent(object):
         # max_vehicle_distance = 5
 
         # affected_by_vehicle, _, _, obstacle_wpt = self._vehicle_obstacle_detected(vehicle_list, max_vehicle_distance)
-        affected_by_vehicle, obstacle_wpt = self._vehicle_obstacle_detected_collider(wp_lookahead=2)
+        affected_by_vehicle, obstacle_wpt = self._vehicle_obstacle_detected_collider(wp_lookahead=3)
 
         if affected_by_vehicle:
             hazard_obstacle = True
