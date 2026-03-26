@@ -13,7 +13,7 @@ import carla
 import time
 import math
 from shapely.geometry import Polygon
-from agents.navigation.collision import get_projected_collisions, draw_spawn_points, get_projected_collisions_2
+from agents.navigation.collision import get_projected_collisions, draw_spawn_points
 '''
 import os, sys
 HERE      = os.path.dirname(__file__)                   
@@ -316,7 +316,7 @@ class BasicAgent(object):
                 wp_distance = min(wp_starting_distance, len(route_trace[i+1]) - 1)
 
                 print(" - checking for collisions")
-                collisions = get_projected_collisions_2(self._world, self._vehicle, route_trace[i + 1][wp_distance][0], debug=True)
+                collisions = get_projected_collisions(self._world, self._vehicle, route_trace[i + 1][wp_distance][0], debug=True)
                 print(" - {} collisions found".format(len(collisions)))
 
                 j = 0
@@ -333,7 +333,7 @@ class BasicAgent(object):
                         wp_distance = wp_starting_distance
                         break
 
-                    collisions = get_projected_collisions_2(self._world, self._vehicle, route_trace[i + 1][wp_distance][0], debug=True)
+                    collisions = get_projected_collisions(self._world, self._vehicle, route_trace[i + 1][wp_distance][0], debug=True)
                     print(" - {} collisions found".format(len(collisions)))
 
                     j += 1
@@ -494,26 +494,21 @@ class BasicAgent(object):
 
         return self._global_planner.trace_route(start_location, end_location, self._world, new_obstacle)
 
-    def _vehicle_obstacle_detected_collider(self, wp_lookahead=1):
+    def _projected_collisions(self, wp_lookahead=1):
         lookahead = wp_lookahead
 
         while len(self._local_planner._waypoints_queue) <= lookahead:
             lookahead = lookahead - 1
             if lookahead == 0: return False, None
 
-        # collisions = []
-        collisions = get_projected_collisions_2(self._world, self._vehicle, self._map.get_waypoint(self._vehicle.get_location()))
+        collisions = []
 
-        # for i in range(lookahead, 0, -1):
         for i in range(0, lookahead):
             target_wpt = self._local_planner._waypoints_queue[i][0]
-            col = get_projected_collisions_2(self._world, self._vehicle, target_wpt, debug=self._debug)
+            col = get_projected_collisions(self._world, self._vehicle, target_wpt, debug=self._debug)
             for c in col:
                 if c not in collisions:
                     collisions.append(c)
-
-        # target_wpt = self._local_planner._waypoints_queue[lookahead][0]
-        # collisions = get_projected_collisions_2(self._world, self._vehicle, target_wpt, debug=self._debug)
 
         if len(collisions) > 0:
             return True, self._map.get_waypoint(collisions[0].get_location())
@@ -529,7 +524,7 @@ class BasicAgent(object):
             lookahead = wp_lookahead
             while len(self._local_planner._waypoints_queue) <= lookahead:
                 lookahead = lookahead - 1
-                if lookahead == 0: return False, None
+                if lookahead == 0: return False
 
             for i in range(lookahead):
                 target_wpt = self._local_planner._waypoints_queue[i][0]
@@ -559,12 +554,12 @@ class BasicAgent(object):
         vehicle_speed = get_speed(self._vehicle) / 5
 
         # Check for possible vehicle obstacles
+
         # max_vehicle_distance = self._base_vehicle_threshold + self._speed_ratio * vehicle_speed
         # max_vehicle_distance = 25
-        # max_vehicle_distance = 5
-
         # affected_by_vehicle, _, _, obstacle_wpt = self._vehicle_obstacle_detected(vehicle_list, max_vehicle_distance)
-        affected_by_vehicle, obstacle_wpt = self._vehicle_obstacle_detected_collider(wp_lookahead=3)
+
+        affected_by_vehicle, obstacle_wpt = self._projected_collisions(wp_lookahead=3)
 
         if affected_by_vehicle:
             hazard_obstacle = True
@@ -602,11 +597,12 @@ class BasicAgent(object):
                         color=carla.Color(r=255, g=0, b=0), life_time=5.0,
                         persistent_lines=True)
 
-                    self._previous_obstacle = obstacle_wpt
+                        self._previous_obstacle = obstacle_wpt
 
                     if self._lc_attempts < 1:
                         self.set_destination(self._destination, None, obstacle_wpt)
                         self._lc_attempts = self._lc_attempts + 1
+                        self._previous_obstacle = obstacle_wpt
 
         elif hazard_obstacle and hazard_light:
             control = self.add_emergency_stop(control)

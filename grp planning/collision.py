@@ -18,25 +18,12 @@ class car_mesh:
 		self.world = world
 		self.corners = [ loc for loc in actor.bounding_box.get_world_vertices(self.center)[1::2]]
 		self.bb = actor.bounding_box
-
-	def get_min_distance(self, mesh):
-		min_distance = float('inf')
-
-		# check if self is colliding with mesh
-
-		for c in mesh.corners:
-			for i in self.corners:
-				dist = max(euclidian_distance_2d(c, i), 0)
-				min_distance = min(min_distance, dist)
-
-		return min_distance
+		self.box_size = euclidian_distance_2d(self.corners[0], self.center.location)
 
 	def is_colliding(self, mesh):
-		box_size = euclidian_distance_2d(mesh.corners[0], mesh.center.location)
-
 		for i in self.corners:
 			dist = euclidian_distance_2d(i, mesh.center.location)
-			if dist <= box_size:
+			if dist <= mesh.box_size:
 				return True
 
 		return False
@@ -67,71 +54,7 @@ def euclidian_distance_3d(loc1, loc2):
 	z = loc2.z - loc1.z
 	return(math.sqrt(math.pow(x, 2) + math.pow(y, 2) + math.pow(z, 2)))
 
-def get_collisions(world, actor, min_distance=0.7):
-	""""
-	A function to use car_mesh to detect any collisions.
-	World, Actor -> [Collsions]
-
-	Gets all other cars in the sim and returns them in a list if the min distance between
-	car mesh vertices is less than the "min_distance" (default 1)
-	"""
-	actor_mesh = car_mesh(world, actor, actor.get_transform())
-	other_actors = list(world.get_actors())
-
-	for act in other_actors:
-		if act.id == actor.id:
-			other_actors.remove(act)
-
-	obstacles = other_actors
-	collisions = []
-
-	for obs in obstacles:
-		if isinstance(obs, carla.libcarla.Vehicle):
-			obs_mesh = car_mesh(world, obs, obs.get_transform())
-
-			#dist = euclidian_distance_2d(actor.get_location(), obs.get_location())
-			dist = actor_mesh.get_min_distance(obs_mesh)
-
-			if (dist < min_distance):
-				collisions.append(obs.id)
-
-	return collisions
-
-def get_projected_collisions(world, actor, waypoint, min_distance=0.7, max_distance=20, debug=False):
-	""""
-	Use the next waypoint from astar coupled with actor to build a projected bouding box.
-	"""
-
-	projected_transform = waypoint.transform
-
-	actor_mesh = car_mesh(world, actor, projected_transform)
-	#other_actors = list(world.get_actors())
-	other_actors = [a for a in list(world.get_actors()) if euclidian_distance_2d(a.get_location(), actor.get_location()) <= max_distance]
-
-	for act in other_actors:
-		if act.id == actor.id:
-			other_actors.remove(act)
-
-	obstacles = other_actors
-	collisions = []
-
-	for obs in obstacles:
-		if isinstance(obs, carla.libcarla.Vehicle):
-			obs_mesh = car_mesh(world, obs, obs.get_transform())
-
-			dist = actor_mesh.get_min_distance(obs_mesh)
-
-			if dist < min_distance:
-				if debug: obs_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=100, g=0, b=0, a=50))
-				if debug: actor_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=100, g=100, b=0, a=50))
-				collisions.append(obs)
-
-	if len(collisions) == 0:
-		if debug: actor_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=0, g=100, b=0, a=50))
-
-	return collisions
-
-def get_projected_collisions_2(world, actor, waypoint, max_distance=20, debug=False):
+def get_projected_collisions(world, actor, waypoint, max_distance=20, debug=False):
 	projected_transform = waypoint.transform
 
 	actor_mesh = car_mesh(world, actor, projected_transform)
@@ -151,11 +74,11 @@ def get_projected_collisions_2(world, actor, waypoint, max_distance=20, debug=Fa
 
 			if actor_mesh.is_colliding(obs_mesh):
 				collisions.append(obs)
-				if debug: obs_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=100, g=0, b=0, a=50))
-				if debug: actor_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=100, g=100, b=0, a=50))
-
-	if len(collisions) == 0:
-		if debug: actor_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=0, g=100, b=0, a=50))
+	# 			if debug: obs_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=100, g=0, b=0, a=50))
+	# 			if debug: actor_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=100, g=100, b=0, a=50))
+ #
+	# if len(collisions) == 0:
+	# 	if debug: actor_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=0, g=100, b=0, a=50))
 
 	return collisions
 
