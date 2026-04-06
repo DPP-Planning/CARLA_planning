@@ -12,32 +12,54 @@ class car_mesh:
 	We can take the minimum distance between the corners of two cars to find out if they're colliding.
 	"""
 
-	def __init__(self, world, actor, transform):
+	def __init__(self, actor):
 		self.id = actor.id
-		self.center = transform
-		self.world = world
-		self.corners = [ loc for loc in actor.bounding_box.get_world_vertices(self.center)[1::2]]
+		self.center = actor.get_transform()
 		self.bb = actor.bounding_box
-		self.box_size = euclidian_distance_2d(self.corners[0], self.center.location)
+		self.corners = [ loc for i, loc in enumerate(actor.bounding_box.get_world_vertices(self.center)) if i % 2 == 0] # Only take the corners on a single plane (4 of the 8 total corners)
 
-	def is_colliding(self, mesh):
-		for i in self.corners:
-			dist = euclidian_distance_2d(i, mesh.center.location)
-			if dist <= mesh.box_size:
-				return True
+	def get_min_distance(self, mesh):
+		min_distance = float('inf')
 
-		return False
+		for c in mesh.corners:
+			for i in self.corners:
+				min_distance = min(min_distance, euclidian_distance_2d(c, i))
+
+		return min_distance
 
 	def print_vertices(self):
 		print("Actor Mesh {}".format(self.id))
 		for v in self.corners:
 			print(" - (X: {}, Y:{})".format(v.x, v.y))
 
-	def draw_mesh(self, life_time=5.0, color=carla.Color(r=100, g=0, b=0, a=150), thickness=0.02):
-		self.world.debug.draw_line(self.corners[0], self.corners[2], thickness=thickness, color=color, life_time=life_time)
-		self.world.debug.draw_line(self.corners[2], self.corners[3], thickness=thickness, color=color, life_time=life_time)
-		self.world.debug.draw_line(self.corners[3], self.corners[1], thickness=thickness, color=color, life_time=life_time)
-		self.world.debug.draw_line(self.corners[1], self.corners[0], thickness=thickness, color=color, life_time=life_time)
+	def contains_waypoint(self, waypoint_or_location):
+		"""Return True if the waypoint/location falls inside this mesh footprint (XY plane)."""
+		if waypoint_or_location is None or len(self.corners) < 3:
+			return False
+
+		if hasattr(waypoint_or_location, "transform") and hasattr(waypoint_or_location.transform, "location"):
+			point = waypoint_or_location.transform.location
+		elif isinstance(waypoint_or_location, carla.Location):
+			point = waypoint_or_location
+		else:
+			return False
+
+		inside = False
+		x, y = point.x, point.y
+		vertices = self.corners
+		j = len(vertices) - 1
+
+		for i in range(len(vertices)):
+			xi, yi = vertices[i].x, vertices[i].y
+			xj, yj = vertices[j].x, vertices[j].y
+			intersects = ((yi > y) != (yj > y)) and (
+				x < (xj - xi) * (y - yi) / ((yj - yi) if (yj - yi) != 0 else 1e-12) + xi
+			)
+			if intersects:
+				inside = not inside
+			j = i
+
+		return inside
 
 def handle_collision(data):
 	print("* Collision Detected! *")
@@ -54,12 +76,16 @@ def euclidian_distance_3d(loc1, loc2):
 	z = loc2.z - loc1.z
 	return(math.sqrt(math.pow(x, 2) + math.pow(y, 2) + math.pow(z, 2)))
 
-def get_projected_collisions(world, actor, waypoint, max_distance=20, debug=False):
-	projected_transform = waypoint.transform
+def get_collisions(world, actor, min_distance=1):
+	""""
+	A function to use car_mesh to detect any collisions.
+	World, Actor -> [Collsions]
 
-	actor_mesh = car_mesh(world, actor, projected_transform)
-	#other_actors = list(world.get_actors())
-	other_actors = [a for a in list(world.get_actors()) if euclidian_distance_2d(a.get_location(), actor.get_location()) <= max_distance]
+	Gets all other cars in the sim and returns them in a list if the min distance between
+	car mesh vertices is less than the "min_distance" (default 1)
+	"""
+	actor_mesh = car_mesh(actor)
+	other_actors = list(world.get_actors())
 
 	for act in other_actors:
 		if act.id == actor.id:
@@ -70,15 +96,13 @@ def get_projected_collisions(world, actor, waypoint, max_distance=20, debug=Fals
 
 	for obs in obstacles:
 		if isinstance(obs, carla.libcarla.Vehicle):
-			obs_mesh = car_mesh(world, obs, obs.get_transform())
+			obs_mesh = car_mesh(obs)
 
-			if actor_mesh.is_colliding(obs_mesh):
-				collisions.append(obs)
-	# 			if debug: obs_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=100, g=0, b=0, a=50))
-	# 			if debug: actor_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=100, g=100, b=0, a=50))
- #
-	# if len(collisions) == 0:
-	# 	if debug: actor_mesh.draw_mesh(life_time=1.0, color=carla.Color(r=0, g=100, b=0, a=50))
+			#dist = euclidian_distance_2d(actor.get_location(), obs.get_location())
+			dist = actor_mesh.get_min_distance(obs_mesh)
+
+			if (dist < min_distance):
+				collisions.append(obs.id)
 
 	return collisions
 
@@ -124,10 +148,9 @@ def main():
 	end = spawn_points[1]
 	start_waypoint = wmap.get_waypoint(start.location)
 	end_waypoint = wmap.get_waypoint(end.location)
-
-	#debug_helper.draw_point(start.location, life_time=10.0)
-	#debug_helper.draw_point(end.location, life_time=10.0)
-	#draw_spawn_points(debug_helper, spawn_points)
+	debug_helper.draw_point(start.location, life_time=10.0)
+	debug_helper.draw_point(end.location, life_time=10.0)
+	draw_spawn_points(debug_helper, spawn_points)
 
 	# A Star
 	route = a_star(start_waypoint, end_waypoint)
@@ -140,21 +163,14 @@ def main():
 	obstacle = world.spawn_actor(obs_bp, spawn_points[11])
 
 	# Track Path with Collision Detection
-
-	route_length = len(route)
-
-	for i in range(route_length):
-		waypoint = route[i]
-
+	for i, waypoint in enumerate(route):
 		actor.set_transform(waypoint.transform)
 
-		if i != route_length - 1:
-			collisions = get_projected_collisions(world, actor, route[i+1])
+		collisions = get_collisions(world, actor)
 
-			if len(collisions) > 0:
-				for col in collisions:
-					print("Collision with actor {}".format(col))
-				exit()
+		if len(collisions) > 0:
+			for col in collisions:
+				print("Collision with actor {}".format(col))
 
 		time.sleep(0.05)
 

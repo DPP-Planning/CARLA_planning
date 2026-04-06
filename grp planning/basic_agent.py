@@ -10,10 +10,8 @@ It can also make use of the global route planner to follow a specifed route
 """
 
 import carla
-import time
-import math
 from shapely.geometry import Polygon
-from agents.navigation.collision import get_projected_collisions, draw_spawn_points
+
 '''
 import os, sys
 HERE      = os.path.dirname(__file__)                   
@@ -30,9 +28,12 @@ from agents.tools.misc import (
         get_trafficlight_trigger_location,
         compute_distance
     )
+from agents.navigation.collision import car_mesh
+
 
 import numpy as np
 from itertools import tee
+import threading
 
 def loc_to_vec(loc: carla.Location) -> np.ndarray:
         return np.array([loc.x, loc.y, loc.z], dtype=float)
@@ -142,11 +143,59 @@ class BasicAgent(object):
         self._destination = None
         self._previous_obstacle = None
         self._prev_obs = False
+        self._seen_obstacles = {}
+        self._seen_obstacles_lock = threading.Lock()
+        self._obstacle_ttl_ticks = 8
 
         # Lane Change
         self._lc_attempts = 0
         self._prev_lane = -1
         self._debug = False
+
+        # Sensor attachment
+        blueprint = self._world.get_blueprint_library().find('sensor.other.obstacle')
+        bb_extent = self._vehicle.bounding_box.extent
+        sensor_z = bb_extent.z + 0.7
+
+        def _spawn_obstacle_sensor(x, y, yaw, distance_m):
+            blueprint.set_attribute('distance', str(distance_m))
+            blueprint.set_attribute('hit_radius', '1')
+            blueprint.set_attribute('only_dynamics', 'False')
+            blueprint.set_attribute('debug_linetrace', 'True')
+            blueprint.set_attribute('sensor_tick', '0.0')
+            transform = carla.Transform(
+                carla.Location(x=x, y=y, z=sensor_z),
+                carla.Rotation(yaw=yaw)
+            )
+            return self._world.spawn_actor(blueprint, transform, attach_to=self._vehicle)
+
+        self._front_obstacle_sensor = _spawn_obstacle_sensor(bb_extent.x, 0.0, 0.0, 20.0)
+        self._rear_obstacle_sensor = _spawn_obstacle_sensor(-bb_extent.x, 0.0, 180.0, 4.0)
+        self._left_obstacle_sensor = _spawn_obstacle_sensor(0.0, -bb_extent.y, -90.0, 4.0)
+        self._right_obstacle_sensor = _spawn_obstacle_sensor(0.0, bb_extent.y, 90.0, 4.0)
+        self._front_left_obstacle_sensor = _spawn_obstacle_sensor(bb_extent.x, -bb_extent.y, -45.0, 8.0)
+        self._front_right_obstacle_sensor = _spawn_obstacle_sensor(bb_extent.x, bb_extent.y, 45.0, 8.0)
+        self._rear_left_obstacle_sensor = _spawn_obstacle_sensor(-bb_extent.x, -bb_extent.y, -135.0, 8.0)
+        self._rear_right_obstacle_sensor = _spawn_obstacle_sensor(-bb_extent.x, bb_extent.y, 135.0, 8.0)
+
+        self._obstacle_sensors = [
+            self._front_obstacle_sensor,
+            self._rear_obstacle_sensor,
+            self._left_obstacle_sensor,
+            self._right_obstacle_sensor,
+            self._front_left_obstacle_sensor,
+            self._front_right_obstacle_sensor,
+            self._rear_left_obstacle_sensor,
+            self._rear_right_obstacle_sensor,
+        ]
+
+        def obstacle_callback(event: carla.ObstacleDetectionEvent):
+            obstacle = event.other_actor
+            if obstacle and obstacle.type_id.startswith("vehicle"):
+                self._update_seen_obstacle(obstacle)
+
+        for sensor in self._obstacle_sensors:
+            sensor.listen(obstacle_callback)
 
         # Change parameters according to the dictionary
         opt_dict['target_speed'] = target_speed
@@ -316,7 +365,7 @@ class BasicAgent(object):
                 wp_distance = min(wp_starting_distance, len(route_trace[i+1]) - 1)
 
                 print(" - checking for collisions")
-                collisions = get_projected_collisions(self._world, self._vehicle, route_trace[i + 1][wp_distance][0], debug=True)
+                collisions = self._seen_obstacle_collisions_at_waypoint(route_trace[i + 1][wp_distance][0])
                 print(" - {} collisions found".format(len(collisions)))
 
                 j = 0
@@ -333,7 +382,7 @@ class BasicAgent(object):
                         wp_distance = wp_starting_distance
                         break
 
-                    collisions = get_projected_collisions(self._world, self._vehicle, route_trace[i + 1][wp_distance][0], debug=True)
+                    collisions = self._seen_obstacle_collisions_at_waypoint(route_trace[i + 1][wp_distance][0])
                     print(" - {} collisions found".format(len(collisions)))
 
                     j += 1
@@ -449,13 +498,12 @@ class BasicAgent(object):
                 if isinstance(next_fr, carla.Location): 
                     next_loc = next_fr
 
-            if self._debug:
-                self._world.debug.draw_line(
-                    curr_loc, next_loc,
-                    thickness=0.25,
-                    color=carla.Color(r=0, g=0, b=50, a=150),
-                    life_time=2.0
-                )
+            self._world.debug.draw_line(
+                curr_loc, next_loc,
+                thickness=0.25,
+                color=carla.Color(r=0, g=0, b=50, a=150),
+                life_time=10.0
+            )
 
         #print("set_destination: ", final_route)
         print(f"Jaggedness:", jaggedness(final_route))
@@ -494,26 +542,20 @@ class BasicAgent(object):
 
         return self._global_planner.trace_route(start_location, end_location, self._world, new_obstacle)
 
-    def _projected_collisions(self, wp_lookahead=1):
-        lookahead = wp_lookahead
-
-        while len(self._local_planner._waypoints_queue) <= lookahead:
-            lookahead = lookahead - 1
-            if lookahead == 0: return False, None
-
+    def _seen_obstacle_collisions_at_waypoint(self, waypoint_or_location):
+        """Return seen obstacle actors whose mesh footprint contains the given waypoint/location."""
         collisions = []
 
-        for i in range(0, lookahead):
-            target_wpt = self._local_planner._waypoints_queue[i][0]
-            col = get_projected_collisions(self._world, self._vehicle, target_wpt, debug=self._debug)
-            for c in col:
-                if c not in collisions:
-                    collisions.append(c)
+        for obs_data in self._get_seen_obstacles_snapshot():
+            actor = obs_data['actor']
+            if not actor.is_alive:
+                continue
 
-        if len(collisions) > 0:
-            return True, self._map.get_waypoint(collisions[0].get_location())
+            obs_mesh = obs_data['mesh']
+            if obs_mesh.contains_waypoint(waypoint_or_location):
+                collisions.append(actor)
 
-        return False, None
+        return collisions
 
     def _at_junction(self, wp_lookahead=2):
         if self._map.get_waypoint(self._vehicle.get_location()).is_junction:
@@ -538,6 +580,8 @@ class BasicAgent(object):
 
     def run_step(self):
         """Execute one step of navigation."""
+        self._tick_seen_obstacles()
+
         # Two hazard detection booleans to avoid replanning just for the sake of
         # avoiding a light. Though problem is the consideration if the vehicle
         # classified as obstacle is part of light.
@@ -553,13 +597,56 @@ class BasicAgent(object):
         # vehicle_speed = get_speed(self._vehicle) / 3.6
         vehicle_speed = get_speed(self._vehicle) / 5
 
-        # Check for possible vehicle obstacles
+        # Sensor-based blocking check over current plan
+        min_vehicle_distance = 25
+        obstacle_wpt = None
+        ego_location = self._vehicle.get_location()
+        current_obstacles = self._get_seen_obstacle_waypoints()
+        replanning_obstacles = current_obstacles if current_obstacles else []
+        plan_queue = list(self._local_planner.get_plan())
+        plan_waypoints = [wp for wp, _ in plan_queue]
+        blocking_candidates = []
 
-        # max_vehicle_distance = self._base_vehicle_threshold + self._speed_ratio * vehicle_speed
-        # max_vehicle_distance = 25
-        # affected_by_vehicle, _, _, obstacle_wpt = self._vehicle_obstacle_detected(vehicle_list, max_vehicle_distance)
+        for obs_data in self._get_seen_obstacles_snapshot():
+            actor = obs_data['actor']
+            if not actor.is_alive:
+                continue
 
-        affected_by_vehicle, obstacle_wpt = self._projected_collisions(wp_lookahead=3)
+            obs_mesh = obs_data['mesh']
+            for plan_wp in plan_waypoints:
+                if isinstance(plan_wp, carla.libcarla.Waypoint):
+                    plan_wp_location = plan_wp.transform.location
+                else:
+                    plan_wp_location = plan_wp
+
+                if ego_location.distance(plan_wp_location) > min_vehicle_distance:
+                    continue
+
+                if obs_mesh.contains_waypoint(plan_wp):
+                    blocking_candidates.append(actor)
+                    break
+
+            if blocking_candidates:
+                break
+
+        if blocking_candidates:
+            closest_actor = min(
+                blocking_candidates,
+                key=lambda act: act.get_location().distance(ego_location)
+            )
+            obstacle_wpt = self._map.get_waypoint(
+                closest_actor.get_location(),
+                lane_type=carla.LaneType.Any
+            )
+            affected_by_vehicle = True
+        else:
+            max_vehicle_distance = 25
+            affected_by_vehicle, _, _, obstacle_wpt = self._vehicle_obstacle_detected(vehicle_list, max_vehicle_distance)
+
+        left_waypoint = obstacle_wpt.get_left_lane() if obstacle_wpt else None
+        right_waypoint = obstacle_wpt.get_right_lane() if obstacle_wpt else None
+        print("left waypoint: ", left_waypoint)
+        print("right waypoint: ", right_waypoint)
 
         if affected_by_vehicle:
             hazard_obstacle = True
@@ -577,40 +664,159 @@ class BasicAgent(object):
 
         control = self._local_planner.run_step()
 
-        if hazard_obstacle:
+        if hazard_obstacle and hazard_light:
+            control = self.add_emergency_stop(control)
+        elif hazard_obstacle:
             print (" - Obstacle detected, entered obstacle resolution")
 
-            control = self.add_emergency_stop(control)
-            at_junction = self._at_junction(wp_lookahead=3) # Avoid Reroute when at or near a junctions
-            goal_proximity = self._get_goal_distance()
-            hazard_distance = self._vehicle.get_location().distance(obstacle_wpt.transform.location)
+            adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(obstacle_wpt)
 
-            if not at_junction and goal_proximity > 25:
+            if (not left_waypoint and not right_waypoint) or adjacent_lane_blocked:
+                print("   - No lane change possible, stopping and waiting for obstacle to clear...")
+                if adjacent_lane_blocked:
+                    print("   - Adjacent lane waypoint(s) blocked by obstacle, emergency stop.")
+                control = self.add_emergency_stop(control)
+            else:
+                print("   - Lane change possible, checking for junctions and goal proximity...")
+                at_junction = self._at_junction(wp_lookahead=3) # Avoid Reroute when at or near a junctions
+                goal_proximity = self._get_goal_distance()
 
-                # if self._previous_obstacle != obstacle_wpt:
-                if self._previous_obstacle == None or self._previous_obstacle.transform.location.distance(obstacle_wpt.transform.location) > 0.5:
-                    print ("   - Replanning around obstacle: ", obstacle_wpt.transform.location)
+                if not at_junction and goal_proximity > 25:
+                    if obstacle_wpt and (self._previous_obstacle is None or self._previous_obstacle.transform.location.distance(obstacle_wpt.transform.location) > 0.5):
+                        print ("   - Replanning around obstacle: ", obstacle_wpt.transform.location)
 
-                    # Debug
-                    if self._debug:
-                        self._world.debug.draw_string(obstacle_wpt.transform.location, 'Obstacle', draw_shadow=False,
-                        color=carla.Color(r=255, g=0, b=0), life_time=5.0,
-                        persistent_lines=True)
+                        if self._debug:
+                            self._world.debug.draw_string(obstacle_wpt.transform.location, 'Obstacle', draw_shadow=False,
+                            color=carla.Color(r=255, g=0, b=0), life_time=5.0,
+                            persistent_lines=True)
 
-                        self._previous_obstacle = obstacle_wpt
-
-                    if self._lc_attempts < 1:
-                        self.set_destination(self._destination, None, obstacle_wpt)
-                        self._lc_attempts = self._lc_attempts + 1
-                        self._previous_obstacle = obstacle_wpt
-
-        elif hazard_obstacle and hazard_light:
-            control = self.add_emergency_stop(control)
+                        if self._lc_attempts < 1:
+                            self.set_destination(self._destination, None, replanning_obstacles)
+                            self._lc_attempts = self._lc_attempts + 1
+                            self._previous_obstacle = obstacle_wpt
 
         self._prev_obs = hazard_obstacle
         self._prev_lane = self._map.get_waypoint(self._vehicle.get_location()).lane_id
 
         return control
+
+    def _update_seen_obstacle(self, obstacle_actor):
+        """Add/update an obstacle in the rotating obstacle set."""
+        try:
+            obstacle_mesh = car_mesh(obstacle_actor)
+            with self._seen_obstacles_lock:
+                self._seen_obstacles[obstacle_actor.id] = {
+                    'actor': obstacle_actor,
+                    'mesh': obstacle_mesh,
+                    'ttl': self._obstacle_ttl_ticks
+                }
+        except RuntimeError:
+            return
+
+    def _get_seen_obstacles_snapshot(self):
+        """Thread-safe snapshot copy of currently tracked obstacles."""
+        with self._seen_obstacles_lock:
+            return [
+                {
+                    'actor': obs_data['actor'],
+                    'mesh': obs_data['mesh'],
+                    'ttl': obs_data['ttl']
+                }
+                for obs_data in self._seen_obstacles.values()
+            ]
+
+    def _tick_seen_obstacles(self):
+        """Refresh obstacle TTL each tick and remove stale observations."""
+        with self._seen_obstacles_lock:
+            obstacle_items = list(self._seen_obstacles.items())
+
+        expired_ids = set()
+        refreshed_data = {}
+
+        for obs_id, obs_data in obstacle_items:
+            actor = obs_data['actor']
+
+            if not actor.is_alive:
+                expired_ids.add(obs_id)
+                continue
+
+            try:
+                refreshed_mesh = car_mesh(actor)
+            except RuntimeError:
+                expired_ids.add(obs_id)
+                continue
+
+            refreshed_ttl = obs_data['ttl'] - 1
+            refreshed_data[obs_id] = {
+                'mesh': refreshed_mesh,
+                'ttl': refreshed_ttl
+            }
+
+            self._draw_obstacle_bbox(refreshed_mesh)
+
+            if refreshed_ttl <= 0:
+                expired_ids.add(obs_id)
+
+        with self._seen_obstacles_lock:
+            for obs_id in expired_ids:
+                self._seen_obstacles.pop(obs_id, None)
+
+            for obs_id, refreshed in refreshed_data.items():
+                if obs_id not in self._seen_obstacles:
+                    continue
+                if obs_id in expired_ids:
+                    continue
+                self._seen_obstacles[obs_id]['mesh'] = refreshed['mesh']
+                self._seen_obstacles[obs_id]['ttl'] = refreshed['ttl']
+
+    def _draw_obstacle_bbox(self, mesh_obj):
+        """Draw the obstacle footprint by connecting all bounding-box corners with lines."""
+        corners = mesh_obj.corners
+        if len(corners) < 2:
+            return
+
+        cx = sum(p.x for p in corners) / len(corners)
+        cy = sum(p.y for p in corners) / len(corners)
+        ordered_corners = sorted(corners, key=lambda p: np.arctan2(p.y - cy, p.x - cx))
+
+        for i in range(len(ordered_corners)):
+            start = ordered_corners[i]
+            end = ordered_corners[(i + 1) % len(ordered_corners)]
+            self._world.debug.draw_line(
+                start,
+                end,
+                thickness=0.08,
+                color=carla.Color(r=255, g=140, b=0),
+                life_time=0.2,
+                persistent_lines=False
+            )
+
+    def _adjacent_lane_waypoints_blocked(self, obstacle_wpt):
+        """Return True if left/right adjacent lane waypoint near obstacle is occupied by a seen obstacle mesh."""
+        if not obstacle_wpt:
+            return False
+
+        left_wp = obstacle_wpt.get_left_lane()
+        right_wp = obstacle_wpt.get_right_lane()
+        candidate_wps = [wp for wp in (left_wp, right_wp) if wp and wp.lane_type == carla.LaneType.Driving]
+        if not candidate_wps:
+            return False
+
+        for obs_data in self._get_seen_obstacles_snapshot():
+            obs_mesh = obs_data['mesh']
+            for candidate_wp in candidate_wps:
+                if obs_mesh.contains_waypoint(candidate_wp):
+                    return True
+        return False
+
+    def _get_seen_obstacle_waypoints(self):
+        """Convert current obstacle set into waypoints for planning."""
+        obstacle_wpts = []
+        for obs_data in self._get_seen_obstacles_snapshot():
+            actor = obs_data['actor']
+            if actor.is_alive:
+                obstacle_wpts.append(self._map.get_waypoint(actor.get_location(), lane_type=carla.LaneType.Any))
+        return obstacle_wpts
 
     def done(self):
         """Check whether the agent has reached its destination."""
