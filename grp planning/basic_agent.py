@@ -605,6 +605,8 @@ class BasicAgent(object):
         replanning_obstacles = current_obstacles if current_obstacles else []
         plan_queue = list(self._local_planner.get_plan())
         plan_waypoints = [wp for wp, _ in plan_queue]
+        path_blocked_by_bbox = False
+        blocking_obstacle_wpt = None
         blocking_candidates = []
 
         for obs_data in self._get_seen_obstacles_snapshot():
@@ -623,21 +625,24 @@ class BasicAgent(object):
                     continue
 
                 if obs_mesh.contains_waypoint(plan_wp):
+                    path_blocked_by_bbox = True
+                    hazard_obstacle = True
                     blocking_candidates.append(actor)
                     break
 
-            if blocking_candidates:
+            if path_blocked_by_bbox:
                 break
 
-        if blocking_candidates:
+        if path_blocked_by_bbox and blocking_candidates:
             closest_actor = min(
                 blocking_candidates,
                 key=lambda act: act.get_location().distance(ego_location)
             )
-            obstacle_wpt = self._map.get_waypoint(
+            blocking_obstacle_wpt = self._map.get_waypoint(
                 closest_actor.get_location(),
                 lane_type=carla.LaneType.Any
             )
+            obstacle_wpt = blocking_obstacle_wpt
             affected_by_vehicle = True
         else:
             max_vehicle_distance = 25
@@ -667,33 +672,23 @@ class BasicAgent(object):
         if hazard_obstacle and hazard_light:
             control = self.add_emergency_stop(control)
         elif hazard_obstacle:
-            print (" - Obstacle detected, entered obstacle resolution")
-
             adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(obstacle_wpt)
 
-            if (not left_waypoint and not right_waypoint) or adjacent_lane_blocked:
-                print("   - No lane change possible, stopping and waiting for obstacle to clear...")
-                if adjacent_lane_blocked:
-                    print("   - Adjacent lane waypoint(s) blocked by obstacle, emergency stop.")
+            left_blocked = (left_waypoint is None) or bool(self._seen_obstacle_collisions_at_waypoint(left_waypoint))
+            right_blocked = (right_waypoint is None) or bool(self._seen_obstacle_collisions_at_waypoint(right_waypoint))
+            
+            if obstacle_wpt and (adjacent_lane_blocked or (left_blocked and right_blocked)):
+                print("Adjacent lane waypoint(s) blocked near obstacle. Emergency stopping.")
                 control = self.add_emergency_stop(control)
-            else:
-                print("   - Lane change possible, checking for junctions and goal proximity...")
-                at_junction = self._at_junction(wp_lookahead=3) # Avoid Reroute when at or near a junctions
-                goal_proximity = self._get_goal_distance()
+            elif obstacle_wpt and (self._previous_obstacle is None or self._previous_obstacle.transform.location.distance(obstacle_wpt.transform.location) > 0.5):
+                print("Entered obstacle resolution")
+                print("Replanning around obstacle: ", obstacle_wpt.transform.location)
+                self._previous_obstacle = obstacle_wpt
+                self.set_destination(self._destination, None, obstacle_wpt)
 
-                if not at_junction and goal_proximity > 25:
-                    if obstacle_wpt and (self._previous_obstacle is None or self._previous_obstacle.transform.location.distance(obstacle_wpt.transform.location) > 0.5):
-                        print ("   - Replanning around obstacle: ", obstacle_wpt.transform.location)
-
-                        if self._debug:
-                            self._world.debug.draw_string(obstacle_wpt.transform.location, 'Obstacle', draw_shadow=False,
-                            color=carla.Color(r=255, g=0, b=0), life_time=5.0,
-                            persistent_lines=True)
-
-                        if self._lc_attempts < 1:
-                            self.set_destination(self._destination, None, replanning_obstacles)
-                            self._lc_attempts = self._lc_attempts + 1
-                            self._previous_obstacle = obstacle_wpt
+                self._world.debug.draw_string(obstacle_wpt.transform.location, 'Obstacle', draw_shadow=False,
+                color=carla.Color(r=255, g=0, b=0), life_time=15.0,
+                persistent_lines=True)
 
         self._prev_obs = hazard_obstacle
         self._prev_lane = self._map.get_waypoint(self._vehicle.get_location()).lane_id
