@@ -41,7 +41,7 @@ def get_legal_neighbors(waypoint):
     
     return neighbors
 
-def a_star(world, start_waypoint, end_waypoint, heuristic_func=euclidean_heuristic, max_distance=5000):
+def a_star(world, start_waypoint, end_waypoint, heuristic_func=euclidean_heuristic, max_distance=5000, new_obstacle=None):
     start_node = AStarNode(start_waypoint, 0, heuristic_func(start_waypoint, end_waypoint))
     open_set = PriorityQueue()
     open_set.put((start_node.f_cost, id(start_node), start_node))
@@ -67,6 +67,9 @@ def a_star(world, start_waypoint, end_waypoint, heuristic_func=euclidean_heurist
         #     return None
         
         for next_waypoint in get_legal_neighbors(current_node.waypoint):
+            # Skip if neighbor is the new obstacle
+            if new_obstacle and next_waypoint.id == new_obstacle.id:
+                continue
             # world.debug.draw_string(next_waypoint.transform.location, '^', draw_shadow=False, color=carla.Color(r=220, g=0, b=220), life_time=60.0, persistent_lines=True)
             # Add a small cost for lane changes
             lane_change_cost = 5 if next_waypoint.lane_id != current_node.waypoint.lane_id else 0

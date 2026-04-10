@@ -222,29 +222,42 @@ class BasicAgent(object):
             :param end_location (carla.Location): final location of the route
             :param start_location (carla.Location): starting location of the route
         """
-        # New parameter: new_obstacle. The current plan is to call set_destination in the event
-        # of a detected obstacle, so thus we can feed that obstacle towards the algorithm
-        # and appropriately replan. 
-        # In normal usage, its value being None ensures that normal operation of the function
-        # is sustained. Further, there was a key decision that the agent class is not holding
-        # the obstacles as information but just passes it on to the algorthim, such that it can
-        # be simulated that the algorithm is working with a new iteration of the map its developing
-        # an algorithm on.
+        if type(end_location) is not list:
+            if not start_location:
+                start_location = self._local_planner.target_waypoint.transform.location
+                clean_queue = True
+            else:
+                start_location = self._vehicle.get_location()
+                clean_queue = False
 
-        if not start_location:
-            start_location = self._local_planner.target_waypoint.transform.location
-            # start_location = self._vehicle.get_location()
-            clean_queue = True
+            start_waypoint = self._map.get_waypoint(start_location)
+            print("basic_agent start location: " , start_location)
+            end_waypoint = self._map.get_waypoint(end_location)
+            self._destination = end_location
+
+            route_trace = self.trace_route(start_waypoint, end_waypoint, new_obstacle)
         else:
-            start_location = self._vehicle.get_location()
-            clean_queue = False
+            route_trace = end_location
+            clean_queue = True
 
-        start_waypoint = self._map.get_waypoint(start_location)
-        print("basic_agent start location: " , start_location)
-        end_waypoint = self._map.get_waypoint(end_location)
-        self._destination = end_location
+        if type(end_location) is not list:
+            if not start_location:
+                start_location = self._local_planner.target_waypoint.transform.location
+                # start_location = self._vehicle.get_location()
+                clean_queue = True
+            else:
+                start_location = self._vehicle.get_location()
+                clean_queue = False
 
-        route_trace = self.trace_route(start_waypoint, end_waypoint, new_obstacle)
+            start_waypoint = self._map.get_waypoint(start_location)
+            print("basic_agent start location: " , start_location)
+            end_waypoint = self._map.get_waypoint(end_location)
+            self._destination = end_location
+
+            route_trace = self.trace_route(start_waypoint, end_waypoint, new_obstacle)
+        else:
+            route_trace = end_location
+            clean_queue = True
 
         # route trace is a list of routes
         # these now have to be connected via lane change links.
@@ -442,7 +455,6 @@ class BasicAgent(object):
 
         # Check for possible vehicle obstacles
         max_vehicle_distance = self._base_vehicle_threshold + self._speed_ratio * vehicle_speed
-        max_vehicle_distance = 25
         affected_by_vehicle, _, _, obstacle_wpt = self._vehicle_obstacle_detected(vehicle_list, max_vehicle_distance)
         if affected_by_vehicle:
             hazard_obstacle = True
@@ -454,10 +466,11 @@ class BasicAgent(object):
             hazard_light = True
 
         control = self._local_planner.run_step()
-        # if hazard_obstacle and not hazard_light:
-        #expediating manuvers
         if hazard_obstacle:
             print ("Entered obstacle resolution")
+            if self._previous_obstacle != obstacle_wpt:
+                self._previous_obstacle = obstacle_wpt
+                self.set_destination(self._destination, new_obstacle=affected_by_vehicle)
             # if self._previous_obstacle != obstacle_wpt:
             if self._previous_obstacle == None or self._previous_obstacle.transform.location.distance(obstacle_wpt.transform.location) > 0.5:
                 print ("Replanning around obstacle: ", obstacle_wpt.transform.location)
@@ -647,9 +660,8 @@ class BasicAgent(object):
 
             target_wpt = self._map.get_waypoint(target_transform.location, lane_type=carla.LaneType.Any)
 
-            # General approach for junctions and vehicles invading other lanes due to the offset
-            if (use_bbs or target_wpt.is_junction) and route_polygon:
-
+            # Robust approach using route polygon intersection
+            if route_polygon:
                 target_bb = target_vehicle.bounding_box
                 target_vertices = target_bb.get_world_vertices(target_vehicle.get_transform())
                 target_list = [[v.x, v.y, v.z] for v in target_vertices]
@@ -657,29 +669,6 @@ class BasicAgent(object):
 
                 if route_polygon.intersects(target_polygon):
                     return (True, target_vehicle, compute_distance(target_vehicle.get_location(), ego_location), target_wpt)
-
-            # Simplified approach, using only the plan waypoints (similar to TM)
-            else:
-
-                if target_wpt.road_id != ego_wpt.road_id or target_wpt.lane_id != ego_wpt.lane_id  + lane_offset:
-                    next_wpt = self._local_planner.get_incoming_waypoint_and_direction(steps=3)[0]
-                    if not next_wpt:
-                        continue
-                    if target_wpt.road_id != next_wpt.road_id or target_wpt.lane_id != next_wpt.lane_id  + lane_offset:
-                        continue
-
-                target_forward_vector = target_transform.get_forward_vector()
-                target_extent = target_vehicle.bounding_box.extent.x
-                target_rear_transform = target_transform
-                target_rear_transform.location -= carla.Location(
-                    x=target_extent * target_forward_vector.x,
-                    y=target_extent * target_forward_vector.y,
-                )
-                # Send in a list of waypoints to the obstacle. Or lane.id comparison to an obstacle within a certain distance.
-                # Not sure which implementation will work out.
-
-                if is_within_distance(target_rear_transform, ego_front_transform, max_distance, [low_angle_th, up_angle_th]):
-                    return (True, target_vehicle, compute_distance(target_transform.location, ego_transform.location), target_wpt)
 
         return (False, None, -1, None)
 
