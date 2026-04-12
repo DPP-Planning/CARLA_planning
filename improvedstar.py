@@ -1,364 +1,490 @@
+import math
 import heapq
-import carla
-import numpy as np
 import random
-from collections import defaultdict
-from queue import PriorityQueue
+#from runpy import run_path
+import numpy as np
+import carla
+import logging
+from collections import deque
 
-#write a separate file 
-class D_star(object):
-    def __init__(self, waypoint, resolution=0.5):
-        self.settings = 'CollisionChecking'
-        self.resolution = resolution
-        self.waypoint = waypoint
-        self.obstacle_threshold = 5.0
-        self.b = defaultdict(lambda: defaultdict(dict))
-        self.OPEN = []
-        self.h = {}
-        self.tag = {}
-        self.V = set()
-        self.parameters = ()
-        self.ind = 0
-        self.Path = []
-        self.done = False
-        self.Obstaclemap = {}
-    
-        self.client = carla.Client('localhost', 2000)
-        self.client.set_timeout(10.0)
-        self.world = self.client.get_world()
-        self.map = self.world.get_map()
-            
-        #this is already initalizing vehicle to a starting locaiton
-        vehicle_bp = self.world.get_blueprint_library().filter('vehicle.carlamotors.firetruck')[0]
-        self.spawn_points = self.world.get_map().get_spawn_points()
-        self.start_spawn = self.spawn_points[0]
-        vehicle = self.world.spawn_actor(vehicle_bp, self.start_spawn)
+"""
+logging.basicConfig(
+    filename='dstar.log',
+    level=logging.INFO,
+    format='%(levelname)s - %(funcName)s - %(message)s - %(lifneno)d'
+)
+"""
 
-        self.vehicle = vehicle
-        # print("Vehicle spawned.", vehicle.get_location())
-        self.state = self.waypoint
-        self.state_space = self.map.get_waypoint(self.vehicle.get_location())
-        self.waypoints = self.map.generate_waypoints(self.resolution)
+class DStar:
+    def __init__(self, start_wp, goal_wp, vehicle, world, resolution: float = 1.0):
+        self.start          = start_wp
+        self.goal           = goal_wp
+        self.vehicle        = vehicle
+        self.world          = world
+        self.resolution     = resolution
+        self.map            = world.get_map()
+        self.all_obst_wps   = {}
+        self.new_obst_wps   = {}
+        self.edge_cost      = {}
+        self.h              = {}
+        self.parent         = {}
+        self.tag            = {}
+        self.OPEN           = []
+        self.all_waypoints = {}
+        self.blocked_nodes = set()   
+        self.xt             = self.goal
+        self.s_current      = self.start
+        self.initialized = False 
+        #self.obstacle = 0
+        self.dynamic_obstacles = []
+        self.add_obs = {}
+        self.all_obs = {}
 
-        wp_tuple = self.init_vehicle()
-        if wp_tuple:
-            start_location, goal_location = wp_tuple
-        self.start_location = start_location
-        self.goal_location = goal_location
-        #self.start_location = self.init_vehicle.parameters[0]
-        #self.goal_location = self.init_vehicle.parameters[1]
-        self.x0 = self.get_nearest_state(self.start_location)
-        self.xt = self.get_nearest_state(self.goal_location)
+    def waypoint_location(self, waypoint):
+        location = waypoint.transform.location
+        return ((location.x), (location.y), (location.z), waypoint.lane_id)
+
+    def cost(self, wp1, wp2):
+        forward_key =  (self.waypoint_location(wp1), self.waypoint_location(wp2))
+        reverse_key = (self.waypoint_location(wp2), self.waypoint_location(wp1))
         
-    
-        #make sure if a initalization function is being called here, that anything that might be used w init variables are 
-        #initalized also properly. 
-        # self.init_vehicle()
+        if forward_key in self.edge_cost:
+            return self.edge_cost[forward_key]
+        if reverse_key in self.edge_cost: 
+            return self.edge_cost[reverse_key]
+        return wp1.transform.location.distance(wp2.transform.location)
 
-    def populate_open(self):
-        if not self.vehicle:
-            return []
-        self.key = self.cost(self.vehicle.get_location(), self.get_nearest_state(self.state_space)) 
-        tup = (self.key, self.state_space)
-        for wp in self.waypoints:
-            heapq.heappush(self.OPEN, tup)
-        return self.OPEN
-    
-    def init_vehicle(self):
-        try:
-            if self.vehicle:
-                print("Vehicle spawned.")
-            else:
-                print("Failed to spawn.")
-                self.vehicle = None 
-                return None
-        except Exception as e:
-            print(f"Failed to connect to Carla: {e}")
-            self.vehicle = None
-            return None 
-
-        goal_vehicle = random.choice(self.spawn_points)
-        while goal_vehicle.location == self.start_spawn.location:
-            goal_vehicle = random.choice(self.spawn_points)
-
-        start_waypoint = self.map.get_waypoint(self.start_spawn.location, project_to_road=True)
-        end_waypoint = self.map.get_waypoint(goal_vehicle.location, project_to_road=True)
-
-        # waypoint_a = self.map.get_waypoint(self.start_spawn, project_to_road=True)
-        # waypoint_b = self.map.get_waypoint(goal_vehicle, project_to_road=True)
-
-        # start_waypoint = waypoint_a
-        # end_waypoint = waypoint_b
-
-        start_end = (start_waypoint, end_waypoint)
-        return start_end
-
-
-    def get_nearest_state(self, state):
+    def get_neighbors(self, waypoint):
+        neighbors = []
+        prev_wps = waypoint.previous(self.resolution)
+        if prev_wps:
+            neighbors.extend(prev_wps)
         
-        #wp_location = carla.Location(x=waypoints[0], y=waypoints[1], z=waypoints[2])
-        # transform = vehicle.get_transform()
-        # vehicle_location = transform.location
-        vehicle_location = self.vehicle.get_location()
-        nearest_state = None
-        min_distance = 1000
-
-        #gets the state_space nearest to vehicle 
-        for state in self.waypoints:
-            # print('statex:: ',state.transform.location.x)
-            state_location = carla.Location(x=state.transform.location.x, y=state.transform.location.y, z=state.transform.location.z)
-            distance = vehicle_location.distance(state_location)
-
-            if distance < min_distance and distance > 5:
-                min_distance = distance
-                nearest_state = state
-
+        next_wps = waypoint.next(self.resolution)  
+        if next_wps:
+            neighbors.extend(next_wps)
         
-        if nearest_state:
-            nearest_location = carla.Location(x=state.transform.location.x, y=state.transform.location.y, z=state.transform.location.z)
-            min_dist = float('inf')
-            for actor in self.world.get_actors():
-                if isinstance(actor, carla.Vehicle) and actor.id != self.vehicle.id:  
-                    obs_location = actor.get_location()
-                    if obs_location.distance(nearest_location) < self.obstacle_threshold:
-                        # If an obstacle is too close, mark this state as invalid
-                        min_dist = min(min_dist, obs_location.distance(nearest_location))
-            if min_dist < self.obstacle_threshold:
-                self.Obstaclemap[nearest_state] = True
-                return None
-                    
-        return nearest_state
-    
-    #converts carla waypoints objects into list of x,y,z coordinate tuples 
-    #def convert_waypoints(self, waypoints):
-        #if not waypoints:
-            #return []
-        #return [(wp.transform.location.x, wp.transform.location.y, wp.transform.location.z) for wp in waypoints]
-    
-    # Checks if a 'y' state has both heuristic and tag dicts 
-    def checkState(self, y):
-        if isinstance(y, carla.Waypoint):
-            waypoint_id = y.id
-        else:
-            waypoint_id = y
-
-        #in unit tests make sure h returns a number and tag returns a string
-        if waypoint_id not in self.h:
-            self.h[waypoint_id] = 0
-        if waypoint_id not in self.tag:
-            self.tag[waypoint_id] = 'New'
+        # Lane changes
+        if waypoint.lane_change & carla.LaneChange.Left:
+            left_wp = waypoint.get_left_lane()
+            if left_wp and left_wp.lane_type == carla.LaneType.Driving:
+                neighbors.append(left_wp)
+        
+        if waypoint.lane_change & carla.LaneChange.Right:
+            right_wp = waypoint.get_right_lane()
+            if right_wp and right_wp.lane_type == carla.LaneType.Driving:
+                neighbors.append(right_wp)
+        
+        if waypoint.transform.location.distance(self.start.transform.location) < 1.5:
+            neighbors.append(self.start)
+        
+        return neighbors
 
     def get_kmin(self):
-        if self.OPEN:
-            self.populate_open()
-            minimum = heapq.heappop(self.OPEN)  # Pop and return the tuple with the minimum key value
-            return minimum[0]
-        return None
-
+        return self.OPEN[0][0] if self.OPEN else float("inf")
     
-    def min_state(self):
-        if self.OPEN:
-            self.populate_open()
-            min_element = heapq.heappop(self.OPEN)
-            return min_element[1], min_element[0] #returns state k with associated key value
-        return None, -1
-
-    #check again
-    def insert(self, x, h_new=None):
-        if isinstance(x, carla.Waypoint):
-            waypoint_id = x.id
-        else:
-            waypoint_id = x
-
-        tag = self.tag.get(x, 'New')
-    
-        if h_new is None:
-            h_new = self.cost(self.vehicle.get_location(), x)
-
-        if tag == 'New':
-            kx = h_new
-            #analyze Open case
-        elif tag == 'Open':
-            kx = min(self.h.get(x, float('inf')), h_new)
-        elif tag == 'Closed':
-            kx = min(self.h.get(x, float('inf')), h_new)
-        else:
-            kx = h_new  
-
-        heapq.heappush(self.OPEN, (kx, x))
-        self.h[x], self.tag[x] = h_new, 'Open'
-        
-    #see how process state goes through obstacle avoidance 
     def process_state(self):
-        x, kold = self.min_state()
+        if not self.OPEN:
+            return float("inf")
         
-        self.tag[x] = 'Closed'
-        self.V.add(x)
-        if x is None:
-            return -1
-        # check if 1st timer s
-        self.checkState(x)
-        if kold < self.h[x]:  # raised states
-            for y in self.children(x):
-                # check y
-                self.checkState(y)
-                a = self.h[y] + self.cost(self, y, x)
-                if self.h[y] <= kold and self.h[x] > a:
-                    self.b[x], self.h[x] = y, a
-        if kold == self.h[x]:  # lower
-            for y in self.children(self, x):
-                # check y
-                self.checkState(y)
-                bb = self.h[x] + self.cost(self, x, y)
-                if self.tag[y] == 'New' or \
-                        (self.b[y] == x and self.h[y] != bb) or \
-                        (self.b[y] != x and self.h[y] > bb):
-                    self.b[y] = x
-                    self.insert(bb, y)
-        else:
-            for y in self.children(self, x):
-                 # check y
-                self.checkState(y)
-                bb = self.h[x] + self.cost(self, x, y)
-                if self.tag[y] == 'New' or \
-                        (self.b[y] == x and self.h[y] != bb):
-                    self.b[y] = x
-                    self.insert(bb, y)
-                else:
-                    if self.b[y] != x and self.h[y] > bb:
-                        self.insert(self.h[x], x)
-                    else:
-                        if self.b[y] != x and self.h[y] > bb and \
-                                self.tag[y] == 'Closed' and self.h[y] == kold:
-                            self.insert(self.h[y], y)
+        kOld, _, currState = heapq.heappop(self.OPEN)
+        currKey = self.waypoint_location(currState)
+        current_h = self.h.get(currKey, float("inf"))
+        
+        if kOld > current_h and self.tag.get(currKey) != "Open":
+            return self.get_kmin()
+        
+        self.tag[currKey] = "Closed"
+        
+        if kOld < current_h:
+            # check if any neighbor has lower raised h
+            for neighbor in self.get_neighbors(currState):
+                newKey = self.waypoint_location(neighbor)
+                neighbor_h = self.h.get(newKey, float("inf"))
+                newCost = self.cost(currState, neighbor)
+                neighbor_tag = self.tag.get(newKey, "New")
+                
+                if (neighbor_tag != "New" and 
+                    neighbor_h <= kOld and 
+                    current_h > neighbor_h + newCost):
+                    self.parent[currKey] = neighbor
+                    self.h[currKey] = neighbor_h + newCost
+                    current_h = self.h[currKey]
+            
+            # propagate raise to children that depend on current children
+            for neighbor in self.get_neighbors(currState):
+                newKey = self.waypoint_location(neighbor)
+                neighbor_h = self.h.get(newKey, float("inf"))
+                newCost = self.cost(currState, neighbor)
+                neighbor_tag = self.tag.get(newKey, "New")
+                parent_key = self.waypoint_location(self.parent[newKey]) if newKey in self.parent else None
+                
+                if neighbor_tag == "New":
+                    self.parent[newKey] = currState
+                    self.h[newKey] = current_h + newCost
+                    heapq.heappush(self.OPEN, (current_h + newCost, id(neighbor), neighbor))
+                    self.tag[newKey] = "Open"
+                
+                elif parent_key == currKey and neighbor_h != current_h + newCost:
+                    # Child's cost is stale, re-open it so it raises
+                    self.h[newKey] = current_h + newCost
+                    heapq.heappush(self.OPEN, (neighbor_h, id(neighbor), neighbor))
+                    self.tag[newKey] = "Open"
+                
+                elif parent_key != currKey and neighbor_h > current_h + newCost:
+                    # better path found through current iter, repoen
+                    heapq.heappush(self.OPEN, (current_h, id(currState), currState))
+                    self.tag[currKey] = "Open"
+                
+                elif (parent_key != currKey and 
+                      current_h > neighbor_h + self.cost(currState, neighbor) and
+                      neighbor_tag == "Closed"):
+                    # Neighbor could lowers current, re-open neighbor
+                    heapq.heappush(self.OPEN, (neighbor_h, id(neighbor), neighbor))
+                    self.tag[newKey] = "Open"
+                    
+        elif kOld == current_h:
+            for neighbor in self.get_neighbors(currState):
+                newKey = self.waypoint_location(neighbor)
+                neighbor_h = self.h.get(newKey, float("inf"))
+                newCost = current_h + self.cost(currState, neighbor)
+                neighbor_tag = self.tag.get(newKey, "New")
+                
+                # Compare location keys
+                parent_key = self.waypoint_location(self.parent[newKey]) if newKey in self.parent else None
+                
+                if (neighbor_tag == "New" or (parent_key == currKey and neighbor_h != newCost) or 
+                    (parent_key != currKey and neighbor_h > newCost)):
+                    self.parent[newKey] = currState
+                    self.h[newKey] = newCost
+                    heapq.heappush(self.OPEN, (newCost, id(neighbor), neighbor))
+                    self.tag[newKey] = "Open"
+                    
+        else:  # kOld > current_h
+            for neighbor in self.get_neighbors(currState):
+                newKey = self.waypoint_location(neighbor)
+                neighbor_h = self.h.get(newKey, float("inf"))
+                newCost = current_h + self.cost(currState, neighbor)
+                neighbor_tag = self.tag.get(newKey, "New")
+                
+                parent_key = self.waypoint_location(self.parent[newKey]) if newKey in self.parent else None
+                
+                if (neighbor_tag == "New" or 
+                    (parent_key == currKey and neighbor_h != newCost)):
+                    self.parent[newKey] = currState
+                    self.h[newKey] = newCost
+                    heapq.heappush(self.OPEN, (newCost, id(neighbor), neighbor))
+                    self.tag[newKey] = "Open"
+                    
+                elif (parent_key != currKey and neighbor_h > newCost and neighbor_tag == "Closed"):
+                    heapq.heappush(self.OPEN, (current_h, id(currState), currState))
+                    self.tag[currKey] = "Open"
+                    
+                elif (parent_key != currKey and current_h > neighbor_h + self.cost(currState, neighbor) 
+                    and neighbor_tag == "Closed"):
+                    heapq.heappush(self.OPEN, (neighbor_h, id(neighbor), neighbor))
+                    self.tag[newKey] = "Open"
+        
         return self.get_kmin()
-
-    def modify_cost(self, state_space):
-        #x is a state; initialize it to a state->waypoint, more specifically the current wp
-        location = self.vehicle.get_location()
-        current_wp = self.map.get_waypoint(location, project_to_road=True) 
-        #b is a backpointer-holder-gets the pred of current state
-        xparent = self.b[current_wp]
-        if self.tag[current_wp] == 'Closed':
-            self.insert(self.h[xparent] + self.cost(current_wp, xparent), current_wp)
-
-    def modify(self, state_space):
-        #x is a state; initialize it to a state->waypoint, more specifically the current wp
-        location = self.vehicle.get_location()
-        current_wp = self.map.get_waypoint(location, project_to_road=True) 
-        self.modify_cost(current_wp)
-        while True:
-            kmin = self.process_state()
-            if kmin >= self.h[current_wp]:
-                break
-
-    def cost(self, start, goal):
-        if goal in self.Obstaclemap:
-            return np.inf
-        #return carla.Location(x=start[0], y=start[1], z=start[2]).distance(carla.Location(x=goal[0], y=goal[1], z=goal[2]))
-        return start.transform.location.distance(goal.transform.location)
     
-    def children(self, state):
-        children = []
-        #get vehicle's current location
-        location = self.vehicle.get_location()
-        current_waypoint = self.map.get_waypoint(location, project_to_road=True) 
-
-        if current_waypoint is None:
-            return children
-
-        for next_wp in current_waypoint.next(2.0):
-            next_state = (next_wp.transform.location.x, next_wp.transform.location.y, next_wp.transform.location.z)
-            if next_state in self.state_space:
-                children.append(next_state)
-
-        if current_waypoint.lane_change & carla.LaneChange.Left:
-            left_wp = current_waypoint.get_left_lane()
-            if left_wp and left_wp.lane_type == carla.LaneType.Driving:
-                left_state = (left_wp.transform.location.x, left_wp.transform.location.y, left_wp.transform.location.z)
-                if left_state in self.state_space:
-                    children.append(left_state)
-
-        if current_waypoint.lane_change & carla.LaneChange.Right:
-            right_wp = current_waypoint.get_right_lane()
-            if right_wp and right_wp.lane_type == carla.LaneType.Driving:
-                right_state = (right_wp.transform.location.x, right_wp.transform.location.y, right_wp.transform.location.z)
-                if right_state in self.state_space:
-                    children.append(right_state)
-
-        return children
-
-    def path(self, goal=None):
+    def modify_cost(self, wp1, wp2, cost):
+        edge_key = (self.waypoint_location(wp1), self.waypoint_location(wp2))
+        self.edge_cost[edge_key] = cost
+        
+        key1 = self.waypoint_location(wp1)
+        key2 = self.waypoint_location(wp2)
+        
+        if self.tag.get(key1) != "New":
+            parent_key = self.waypoint_location(self.parent[key1]) if key1 in self.parent else None
+            old_h = self.h.get(key1, float("inf"))
+          
+            print(f"modify_cost: key1 h={old_h:.2f}, parent_key==key2? {parent_key == key2}")
+            print(f"parent_key={parent_key}")
+            print(f"key2={key2}")
+            
+            if parent_key == key2:
+                self.h[key1] = self.h.get(key2, float("inf")) + cost
+                heapq.heappush(self.OPEN, (old_h, id(wp1), wp1))
+                self.tag[key1] = "Open"
+            else:
+                heapq.heappush(self.OPEN, (old_h, id(wp1), wp1))
+                self.tag[key1] = "Open"
+        
+        return self.get_kmin()
+   
+    def reconstruct_path(self, from_waypoint=None):
+        if from_waypoint is None:
+            from_waypoint = self.start
+        
         path = []
-        location = []
-        if not goal:
-            x = self.x0
-        else:
-            x = goal
-            start = self.xt
-        while x != start:
-            path.append([np.array(x), np.array(self.b[x])])
-            location.append(carla.Location(x=x[0], y=x[1], z=x[2]))
-            x = self.b[x]
-
-        location.append(carla.Location(x=start[0], y=start[1], z=start[2]))
-
+        current = from_waypoint
+        goal_key = self.waypoint_location(self.goal)
+        visited = set()
+        
+        while self.waypoint_location(current) != goal_key:
+            current_key = self.waypoint_location(current)
+            
+            if current_key in visited:
+                print(f"cycle at {current_key}")
+                return None
+            visited.add(current_key)
+            
+            path.append(current)
+            
+            if current_key not in self.parent:
+                print(f"no parent for {current_key}")
+                return None
+            
+            next_wp = self.parent[current_key]
+            '''
+            edge_cost = self.cost(current, next_wp)
+            
+            if edge_cost > 10000:
+                print(f"path went through obs, cost={edge_cost}")
+            '''
+            current = next_wp
+        path.append(self.goal)
+        for i in range(len(path) - 1):
+            c = self.cost(path[i], path[i+1])
+            if c > 10000:
+                print(f"PATH GOES THROUGH OBSTACLE at index {i}, cost={c}")
         return path
     
-    def run(self):
-        
-        self.OPEN.append((self.cost(self.x0, self.xt), self.x0))
-        self.tag[self.x0] = 'Open'
-        while self.tag.get(self.xt, 'New') != "Closed":
-            kmin = self.process_state()
-            if kmin == -1:
-                print("No path found.")
-                return
-
-        self.Path = self.path()
-        self.done = True
-        self.visualize_path(self.Path)
-
-        for _ in range(100):
-            self.move_vehicle()
-            s = self.xt
-            while s != self.x0:
-                sparent = self.b.get(s)
-                if self.cost(s, sparent) == np.inf:
-                    self.modify(s)
-                    continue
-                self.ind += 1
-                s = sparent
-            self.Path = self.path()
-            self.visualize_path(self.Path)
+    #because of this function, once the path gets updated with the obstacles from back to start
+    #its traverses again because of the parents so it starts from the latest built obstacle
+    def get_current_path(self):
+        path = []
+        current = self.s_current
+        goal_key = self.waypoint_location(self.goal)
+        visited = set() 
+        while self.waypoint_location(current) != goal_key:
+            current_key = self.waypoint_location(current)
+            if current_key in visited:
+                print("Key previously visited")
+                return None
+            visited.add(current_key)
+            path.append(current)
+            if current_key not in self.parent:
+                return None
+            current = self.parent[current_key]
+        path.append(self.goal)
+        return path
     
-    #controls vehicle to be moved from one place to another
-    def move_vehicle(self):
-        if not self.vehicle:
-            print("Vehicle not initialized.")
-            return
+    def manage_obstacles(self, path, num_obstacles=None):
+        if len(path) < 3:
+            print("Path too short to add obstacles")
+            return False
+        
+        num_obstacles = random.randint(1, min(3, len(path) - 2))
+        obstacle_indices = random.sample(range(1, len(path) - 2), num_obstacles)
+        
+        print(f"Add {num_obstacles} obstacles to path")
+        current_key = self.waypoint_location(self.s_current)
+        
+        for index in obstacle_indices:
+            wp1 = path[index]
+            wp2 = path[index + 1]
+            wp1_key = self.waypoint_location(wp1)
+            wp2_key = self.waypoint_location(wp2)
+            print(f"Obstacle at index {index}: wp1 h={self.h.get(wp1_key)}, wp2 h={self.h.get(wp2_key)}")
+            
+            self.dynamic_obstacles.append((wp1, wp2, 999999))
+            self.world.debug.draw_string(wp1.transform.location, "OBS", draw_shadow=False, 
+                                        color=carla.Color(255, 0, 0), life_time=30.0)
+            
+            # Modify cost in both directions
+            self.modify_cost(wp1, wp2, 999999)
+            self.modify_cost(wp2, wp1, 999999)
 
-        if self.Path:
-            next_waypoint = self.Path[0]
-            location = carla.Location(x=next_waypoint[0][0], y=next_waypoint[0][1], z=next_waypoint[0][2])
-            self.vehicle.set_location(location)
+            iteration = 0
+            max_iterations = 50000
+            h_before = self.h.get(current_key, float("inf"))
+            
+            while self.OPEN and iteration < max_iterations:
+                kmin = self.process_state()
+                iteration += 1
+                
+                if kmin == float("inf"):
+                    print("no path exists around obstacles")
+                    return False
+                
+                if self.tag.get(current_key) == "Closed" and iteration > 2:
+                    h_after = self.h.get(current_key, float("inf"))
+                    if h_after != h_before and h_after < h_before * 10:
+                        print(f"Obstacle at index {index} resolved after {iteration} iterations (h: {h_before:.2f} : {h_after:.2f})")
+                        h_before = h_after
+                        break
+            
+            if iteration >= max_iterations:
+                print("max iters for obstacle at index", index)
+                return False
+            
+            # Reconstruct path with updated costs for next obstacle check
+            path = self.reconstruct_path(from_waypoint=self.s_current)
+            if path is None:
+                print("No path after obstacle at index", index)
+                return False
+        
+        return True
+   
+    def initialize_search(self):
+        self.h.clear()
+        self.parent.clear()
+        self.tag.clear()
+        self.OPEN.clear()
+        self.s_current = self.start
+
+        goal_key  = self.waypoint_location(self.goal)
+        start_key = self.waypoint_location(self.start)
+
+        self.h[goal_key]   = 0.0
+        self.tag[goal_key] = "Open"
+        heapq.heappush(self.OPEN, (0.0, id(self.goal), self.goal))
+        val = 0.0
+        while self.tag.get(start_key) != "Closed" and val != float("inf"):
+            #rint(f"val before: {val}")
+            val = self.process_state()
+           #print(f"val after: {val}")
+            #self.handle_obstacles()
+        if val == float("inf"):
+            print("val is inf")
+            return None
+        path = self.reconstruct_path()
+        if path:
+            self.visualize_path(path)
+            return path
         else:
-            print("Path empty.")
-
+            print("No path found")
+            return None
+        
+    def run(self):
+        # Initial search from goal to start
+        initial_path = self.initialize_search()
+        if initial_path is None:
+            print("No initial path found")
+            return None
+        
+        print(f"Initial path: {len(initial_path)} waypoints")
+        self.visualize_path(initial_path)
+        self.s_current = self.start
+        success = self.manage_obstacles(initial_path)
+        if not success:
+            print("Cannot replan around obstacles")
+            return None
+        final_path = self.reconstruct_path(from_waypoint=self.s_current)
+        
+        if final_path is None:
+            print("No path after obstacles")
+            return None
+        
+        print(f"Final path wps: {len(final_path)}")
+        self.visualize_path(final_path)
+        self.print_path(final_path)
+        
+        return final_path
+        
     def visualize_path(self, path):
-        debug = self.world.debug
-        for segment in path:
-            start, end = segment
-            debug.draw_line(
-                carla.Location(x=start[0], y=start[1], z=start[2]),
-                carla.Location(x=end[0], y=end[1], z=end[2]),
-                thickness=0.1, color=carla.Color(r=255, g=0, b=0), life_time=5.0
-            )
+        if not path:
+            return
+        for i in range(len(path) - 1):
+            p1 = path[i].transform.location
+            p2 = path[i + 1].transform.location
+            self.world.debug.draw_string(p1, "^", draw_shadow=False,
+                                         color=carla.Color(0, 255, 0),
+                                         life_time=15.0)
+            self.world.debug.draw_string(p2, "^", draw_shadow=False,
+                                         color=carla.Color(0, 255, 0),
+                                         life_time=15.0)
+        self.world.debug.draw_string(path[0].transform.location, "START",
+                                     draw_shadow=False,
+                                     color=carla.Color(0, 255, 0),
+                                     life_time=15.0)
+        self.world.debug.draw_string(path[-1].transform.location, "GOAL",
+                                     draw_shadow=False,
+                                     color=carla.Color(0, 0, 255),
+                                     life_time=15.0)
+        
 
-if __name__ == '__main__':
+    def print_path(self, path, tag="path"):
+        if not path:
+            return
+        coords = [(round(wp.transform.location.x, 2), round(wp.transform.location.y, 2), round(wp.transform.location.z, 2)) for wp in path]
+        print(f"({len(coords)} waypoints):\n{coords}\n")
+
+    def move_vehicle(self, path):
+        if not path:
+            return
+        for wp in path:
+            self.vehicle.set_transform(wp.transform)
+            self.world.wait_for_tick()
+  
+if __name__ == "__main__":
     try:
-        D = D_star(1)
-        D.run()
-    finally:
-        D.vehicle.destroy()
+        client = carla.Client("localhost", 4000)
+        client.set_timeout(10.0)
+        world = client.get_world()
+        carla_map = world.get_map()
+        blueprint_library = world.get_blueprint_library()
+        '''
+        #traffic manager
+        traffic_manager = client.get_trafficmanager(8000)
+        traffic_manager.set_global_distance_to_leading_vehicle(2.5)
+        traffic_manager.set_synchronous_mode(True)
+        
+        #synchronous mode 
+        settings = world.get_settings()
+        settings.synchronous_mode = True
+        settings.fixed_delta_seconds = 0.05
+        world.apply_settings(settings)
+        '''
+        firetruck_bp = blueprint_library.filter('vehicle.carlamotors.firetruck')[0]
+        spawn_points = carla_map.get_spawn_points()
 
+        start_ind = 25
+        end_ind = 35
+        point_a = spawn_points[start_ind]
+        firetruck = world.spawn_actor(firetruck_bp, point_a)
+        point_b = spawn_points[end_ind]
+        
+        while point_b.location == point_a.location:
+            point_b = random.choice(spawn_points)
+
+        start_wp = carla_map.get_waypoint(point_a.location, project_to_road=True)
+        goal_wp = carla_map.get_waypoint(point_b.location, project_to_road=True)
+
+        print(f"Start: {start_wp.transform.location}")
+        print(f"Goal: {goal_wp.transform.location}")
+
+        world.debug.draw_string(start_wp.transform.location, "START",
+                                draw_shadow=False, color=carla.Color(255, 0, 0),
+                                life_time=30.0, persistent_lines=True)
+        world.debug.draw_string(goal_wp.transform.location, "GOAL",
+                                draw_shadow=False, color=carla.Color(255, 0, 0),
+                                life_time=30.0, persistent_lines=True)
+
+        planner = DStar(start_wp, goal_wp, firetruck, world, resolution=1.0)
+        #path = planner.initialize_search()
+        path = planner.run()
+
+        if path is None:
+            print("Initial planning failed")
+            #sys.exit()
+        print("All waypoints in initial path:")
+        for index, wp in enumerate(path):
+            loc = wp.transform.location
+            print(f"{index:03d}: (x={loc.x}, y={loc.y}, z={loc.z})")
+
+        if path:
+            #print("Moving vehicle along the planned path")
+            planner.print_path(path, "final")
+            planner.visualize_path(path)
+        
+        if path: 
+            planner.move_vehicle(path)
+        firetruck.destroy()
+        #planner.print_path(path)
+
+    except Exception as exc:
+        print("Error during D* planning or execution:", exc)
+        if 'firetruck' in locals():
+            firetruck.destroy()
