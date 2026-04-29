@@ -241,17 +241,30 @@ class LocalPlanner(object):
         self._min_distance = self._base_min_distance + self._distance_ratio * vehicle_speed
 
         num_waypoint_removed = 0
-        for waypoint, _ in self._waypoints_queue:
+        for pt, _ in self._waypoints_queue:
+            if isinstance(pt, carla.Waypoint):
+                waypoint = pt
+                if len(self._waypoints_queue) - num_waypoint_removed == 1:
+                    min_distance = 1  # Don't remove the last waypoint until very close by
+                else:
+                    min_distance = self._min_distance
 
-            if len(self._waypoints_queue) - num_waypoint_removed == 1:
-                min_distance = 1  # Don't remove the last waypoint until very close by
-            else:
-                min_distance = self._min_distance
+                if veh_location.distance(waypoint.transform.location) < min_distance:
+                    num_waypoint_removed += 1
+                else:
+                    break
+            elif isinstance(pt, carla.Location):
+                loc = pt
+                if len(self._waypoints_queue) - num_waypoint_removed == 1:
+                    min_distance = 1  # Don't remove the last waypoint until very close by
+                else:
+                    min_distance = self._min_distance
 
-            if veh_location.distance(waypoint.transform.location) < min_distance:
-                num_waypoint_removed += 1
-            else:
-                break
+                if veh_location.distance(loc) < min_distance:
+                    num_waypoint_removed += 1
+                else:
+                    break
+
 
         if num_waypoint_removed > 0:
             for _ in range(num_waypoint_removed):
@@ -266,10 +279,17 @@ class LocalPlanner(object):
             control.hand_brake = False
             control.manual_gear_shift = False
         else:
-            self.target_waypoint, self.target_road_option = self._waypoints_queue[0]
-            # self._world.debug.draw_string(self.target_waypoint.transform.location, 'f{i}', draw_shadow=False,
-            #     color=carla.Color(r=255, g=0, b=0), life_time=120.0,
-            #     persistent_lines=True)
+            pt, self.target_road_option = self._waypoints_queue[0]
+
+            if isinstance(pt, carla.Waypoint):
+                # self.target_waypoint, self.target_road_option = self._waypoints_queue[0]
+                self.target_waypoint = pt
+                # self._world.debug.draw_string(self.target_waypoint.transform.location, 'f{i}', draw_shadow=False,
+                #     color=carla.Color(r=255, g=0, b=0), life_time=120.0,
+                #     persistent_lines=True)
+            elif isinstance(pt, carla.Location):
+                self.target_waypoint = self._map.get_waypoint(pt)
+
             control = self._vehicle_controller.run_step(self._target_speed, self.target_waypoint)
             veh_location = self._vehicle.get_location()
 
