@@ -146,6 +146,7 @@ class BasicAgent(object):
         self._seen_obstacles = {}
         self._seen_obstacles_lock = threading.Lock()
         self._obstacle_ttl_ticks = 8
+        self._position_change_threshold = 0.05
 
         # Lane Change
         self._lc_attempts = 0
@@ -699,11 +700,24 @@ class BasicAgent(object):
         """Add/update an obstacle in the rotating obstacle set."""
         try:
             obstacle_mesh = car_mesh(obstacle_actor)
+            current_location = obstacle_actor.get_location()
+            current_velocity = obstacle_actor.get_velocity()
             with self._seen_obstacles_lock:
+                previous_entry = self._seen_obstacles.get(obstacle_actor.id)
+                previous_location = previous_entry['location'] if previous_entry else None
+                position_changed = True
+                if previous_location:
+                    position_changed = (
+                        current_location.distance(previous_location) > self._position_change_threshold
+                    )
+
                 self._seen_obstacles[obstacle_actor.id] = {
                     'actor': obstacle_actor,
                     'mesh': obstacle_mesh,
-                    'ttl': self._obstacle_ttl_ticks
+                    'ttl': self._obstacle_ttl_ticks,
+                    'location': current_location,
+                    'velocity': current_velocity,
+                    'position_changed': position_changed
                 }
         except RuntimeError:
             return
@@ -715,7 +729,10 @@ class BasicAgent(object):
                 {
                     'actor': obs_data['actor'],
                     'mesh': obs_data['mesh'],
-                    'ttl': obs_data['ttl']
+                    'ttl': obs_data['ttl'],
+                    'location': obs_data.get('location'),
+                    'velocity': obs_data.get('velocity'),
+                    'position_changed': obs_data.get('position_changed', False)
                 }
                 for obs_data in self._seen_obstacles.values()
             ]
@@ -737,14 +754,26 @@ class BasicAgent(object):
 
             try:
                 refreshed_mesh = car_mesh(actor)
+                refreshed_location = actor.get_location()
+                refreshed_velocity = actor.get_velocity()
             except RuntimeError:
                 expired_ids.add(obs_id)
                 continue
 
             refreshed_ttl = obs_data['ttl'] - 1
+            previous_location = obs_data.get('location')
+            position_changed = True
+            if previous_location:
+                position_changed = (
+                    refreshed_location.distance(previous_location) > self._position_change_threshold
+                )
+
             refreshed_data[obs_id] = {
                 'mesh': refreshed_mesh,
-                'ttl': refreshed_ttl
+                'ttl': refreshed_ttl,
+                'location': refreshed_location,
+                'velocity': refreshed_velocity,
+                'position_changed': position_changed
             }
 
             self._draw_obstacle_bbox(refreshed_mesh)
@@ -763,6 +792,9 @@ class BasicAgent(object):
                     continue
                 self._seen_obstacles[obs_id]['mesh'] = refreshed['mesh']
                 self._seen_obstacles[obs_id]['ttl'] = refreshed['ttl']
+                self._seen_obstacles[obs_id]['location'] = refreshed['location']
+                self._seen_obstacles[obs_id]['velocity'] = refreshed['velocity']
+                self._seen_obstacles[obs_id]['position_changed'] = refreshed['position_changed']
 
     def _draw_obstacle_bbox(self, mesh_obj):
         """Draw the obstacle footprint by connecting all bounding-box corners with lines."""
@@ -1097,4 +1129,5 @@ class BasicAgent(object):
             plan.append((next_wp, RoadOption.LANEFOLLOW))
 
         return plan
+
 
