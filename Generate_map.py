@@ -281,7 +281,7 @@ def main():
     argparser.add_argument("--host", metavar="H", default="127.0.0.1", help="IP of the host server (default: 127.0.0.1)")
     argparser.add_argument("--port", metavar="P", default=2000, type=int, help="TCP port to listen to (default: 2000)")
     argparser.add_argument("--res", default=DEFAULT_RESOLUTION, type=float, help="Resolution of waypoints (fixed at 1.0 for cache consistency)")
-    argparser.add_argument("--output", default="map_cache.pkl", help="Output file (.pkl or .txt)")
+    argparser.add_argument("--output", default="map_cache.txt", help="Output file (.pkl or .txt)")
     args = argparser.parse_args()
 
     try:
