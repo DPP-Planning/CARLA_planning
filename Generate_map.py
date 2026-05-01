@@ -4,12 +4,14 @@ import pickle
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import carla
 
 
 DEFAULT_RESOLUTION = 1.0
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 @dataclass
@@ -259,9 +261,20 @@ def connect_and_build_dlite_inputs(
     )
 
 
+def resolve_output_path(output_path: str) -> Path:
+    resolved_output_path = Path(output_path).expanduser()
+    if not resolved_output_path.is_absolute():
+        resolved_output_path = PROJECT_ROOT / resolved_output_path
+
+    return resolved_output_path
+
+
 def save_waypoint_graph(waypoint_graph: Dict[int, dict], output_path: str) -> None:
-    if output_path.endswith(".txt"):
-        with open(output_path, "w", encoding="utf-8") as output_file:
+    resolved_output_path = resolve_output_path(output_path)
+    resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if resolved_output_path.suffix == ".txt":
+        with open(resolved_output_path, "w", encoding="utf-8") as output_file:
             for waypoint_id, data in waypoint_graph.items():
                 output_file.write(f"waypoint_id: {waypoint_id}\n")
                 output_file.write(f"location: {data['location']}\n")
@@ -272,7 +285,7 @@ def save_waypoint_graph(waypoint_graph: Dict[int, dict], output_path: str) -> No
                 output_file.write("\n")
         return
 
-    with open(output_path, "wb") as output_file:
+    with open(resolved_output_path, "wb") as output_file:
         pickle.dump(waypoint_graph, output_file)
 
 
@@ -296,7 +309,8 @@ def main():
         print(f"Generated {len(map_data.all_waypoints)} unique waypoints at {map_data.resolution}m resolution.")
 
         save_waypoint_graph(map_data.waypoint_graph, args.output)
-        print(f"Successfully saved {len(map_data.waypoint_graph)} waypoint graph entries to '{args.output}'.")
+        output_path = resolve_output_path(args.output)
+        print(f"Successfully saved {len(map_data.waypoint_graph)} waypoint graph entries to '{output_path}'.")
 
     except Exception as exc:
         print(f"Error during map generation: {exc}")
