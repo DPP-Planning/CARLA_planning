@@ -100,6 +100,16 @@ def edge_cost(graph, start_id, end_id):
 
 def find_shortest_route(graph, start_id, goal_id, blocked_ids=None):
     blocked_ids = set(blocked_ids or [])
+    missing_ids = [waypoint_id for waypoint_id in (start_id, goal_id) if waypoint_id not in graph]
+    if missing_ids:
+        available_ids = sorted(graph.keys())
+        preview_ids = ", ".join(str(waypoint_id) for waypoint_id in available_ids[:12])
+        raise ValueError(
+            f"Waypoint ID(s) not found in map cache: {missing_ids}. "
+            f"The first available IDs are: {preview_ids}. "
+            "Use --list-waypoints to inspect valid IDs, or use --start-location/--goal-location."
+        )
+
     if start_id in blocked_ids or goal_id in blocked_ids:
         return []
 
@@ -480,6 +490,14 @@ def resolve_visualization_inputs(graph, args):
     return route_ids, explored_ids, obstacle_ids, start_id, goal_id
 
 
+def print_waypoint_summary(graph, limit):
+    print(f"Loaded {len(graph)} waypoints.")
+    for waypoint_id in sorted(graph.keys())[:limit]:
+        location = graph[waypoint_id].get("location")
+        successors = graph[waypoint_id].get("successors", [])
+        print(f"{waypoint_id}: location={location}, successors={successors}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Visualize Generate_map.py map_cache.txt output.")
     parser.add_argument("--input", default="map_cache.txt", help="Path to map_cache.txt")
@@ -493,6 +511,8 @@ def main():
     parser.add_argument("--goal-id", type=int, help="Goal waypoint ID")
     parser.add_argument("--start-location", help="Start location as x,y or x,y,z; nearest waypoint is used")
     parser.add_argument("--goal-location", help="Goal location as x,y or x,y,z; nearest waypoint is used")
+    parser.add_argument("--list-waypoints", action="store_true", help="Print available waypoint IDs and exit")
+    parser.add_argument("--list-limit", default=25, type=int, help="Number of waypoint IDs to print with --list-waypoints")
     args = parser.parse_args()
 
     input_path = resolve_path(args.input)
@@ -502,6 +522,10 @@ def main():
         raise FileNotFoundError(f"Could not find input cache file: {input_path}")
 
     graph = parse_waypoint_graph(input_path)
+    if args.list_waypoints:
+        print_waypoint_summary(graph, args.list_limit)
+        return
+
     route_ids, explored_ids, obstacle_ids, start_id, goal_id = resolve_visualization_inputs(graph, args)
     if output_path.suffix.lower() == ".svg":
         save_svg(
