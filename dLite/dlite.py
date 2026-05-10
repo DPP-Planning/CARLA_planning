@@ -1,4 +1,5 @@
 import carla
+import json
 import random
 import time
 
@@ -6,20 +7,33 @@ import time
 from PriorityQueueDLite import PriorityQueue, Priority
 import sys
 import os
+from pathlib import Path
 import keyboard
 # print(sys.getrecursionlimit())
 sys.setrecursionlimit(50000)
 
 sys.path.append(os.path.join(os.path.dirname(__file__), 'grp planning'))
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 # Now import from global_route_planning.py
 from global_route_planner import _localize
+from Generate_map import build_dlite_inputs
 
 import threading
 from copy import deepcopy
 
 class DStarLite:
-    def __init__(self, world, start_waypoint, end_waypoint,all_waypoints,wp_pts,vehicle):
+    def __init__(
+        self,
+        world,
+        start_waypoint,
+        end_waypoint,
+        all_waypoints,
+        wp_pts,
+        vehicle,
+        waypoint_graph=None,
+        waypoint_lookup=None,
+    ):
         self.world = world
         self.map = world.get_map()
         self.start = start_waypoint
@@ -43,6 +57,41 @@ class DStarLite:
         print('init successfully')
         self.new_edges_and_old_costs = None
         self.path = []
+        self.waypoint_graph = waypoint_graph or {}
+        self.waypoint_lookup = waypoint_lookup or {waypoint.id: waypoint for waypoint in all_waypoints}
+
+    def _waypoint_ids(self, waypoints):
+        waypoint_ids = []
+        seen_ids = set()
+        for waypoint in waypoints or []:
+            if waypoint is None:
+                continue
+            waypoint_id = waypoint.id
+            if waypoint_id in seen_ids:
+                continue
+            seen_ids.add(waypoint_id)
+            waypoint_ids.append(waypoint_id)
+        return waypoint_ids
+
+    def export_visualization_data(self, output_path="dlite_route.json", route=None):
+        output_path = Path(output_path)
+        if not output_path.is_absolute():
+            output_path = Path(__file__).resolve().parents[1] / output_path
+
+        payload = {
+            "start": self.start.id if self.start else None,
+            "goal": self.goal.id if self.goal else None,
+            "route": self._waypoint_ids(route or self.path),
+            "explored": self._waypoint_ids(self.path),
+            "obstacles": sorted(self.all_obst_wps.keys()),
+        }
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as output_file:
+            json.dump(payload, output_file, indent=2)
+
+        print(f"Saved D* Lite visualization data to {output_path}")
+        return output_path
         
     def successors(self,waypoint):
         neighbors = []
@@ -243,13 +292,13 @@ class DStarLite:
         while self.s_current.transform.location.distance(self.goal.transform.location) >= 3.5:
             if self.rhs[self.start.id] == float('inf'):
                 print("There is no known path to the goal.")
-                return
+                return None
 
             # Move to the best successor
             successor = self.successors(self.s_current)
             if not successor:
                 print("No valid successor found.")
-                return
+                return None
             min_s = float('inf')
             arg_min = None
             for s_ in successor:
@@ -260,6 +309,7 @@ class DStarLite:
                     arg_min = s_
 
             self.s_current = arg_min
+            path.append(self.s_current)
             self.vehicle.set_transform(self.s_current.transform)
 
             if self.s_current.transform.location.distance(self.all_waypoints[2824].transform.location)<25 and flag==0:
@@ -284,6 +334,7 @@ class DStarLite:
 
             if self.s_current.transform.location.distance(self.goal.transform.location) < 3.5: # see if i can make it work with 2.0
                 print('ARRIVED')
+                return path
 
             if self.rescan():
                 self.km += self.heuristic_c(self.s_last, self.start)
@@ -314,8 +365,11 @@ class DStarLite:
                 self.new_obst_wps = {}
                 self.compute_shortest_path()
         print(f"{self.all_obst_wps}")
-        print(f'{self.g[1412984381793799066]}')
+        debug_waypoint_id = 1412984381793799066
+        if debug_waypoint_id in self.g:
+            print(f'{self.g[debug_waypoint_id]}')
         print('Done!')
+        return path
 
 class ThreadedDStarLite:
     def __init__(self, dstar: DStarLite, debug_draw_in_thread=False, replan_interval=0.2):
@@ -488,29 +542,18 @@ world.debug.draw_string(end_waypoint.transform.location, 'END', draw_shadow=Fals
 print("Firetruck starting at", point_a.location)
 print(f"Destination: {point_b.location}")
 
-gen_points = carla_map.generate_waypoints(1)
-real_points = []
-wp_pts = {}
-pos = 0
+map_data = build_dlite_inputs(
+    carla_map,
+    start_waypoint=start_waypoint,
+    goal_waypoint=end_waypoint,
+)
 
+all_waypoints = map_data.all_waypoints
+wp_pts = map_data.wp_pts
+get_start = map_data.start_waypoint
+get_end = map_data.goal_waypoint
 
-
-curr_min = gen_points[0]
-for i in gen_points:
-    if i.transform.location.distance(start_waypoint.transform.location) < curr_min.transform.location.distance(start_waypoint.transform.location):
-        curr_min = i
-get_start = curr_min
-curr_min = gen_points[0]
-for i in gen_points:
-    if i.transform.location.distance(end_waypoint.transform.location) < curr_min.transform.location.distance(end_waypoint.transform.location):
-        curr_min = i
-get_end = curr_min
-print(f'gen_points {gen_points[0]}')
-for i in gen_points + [get_start] +[get_end]:
-    real_points.append(carla_map.get_waypoint(i.transform.location, project_to_road=True))
-    wp_pts[carla_map.get_waypoint(i.transform.location, project_to_road=True).id] = pos
-    pos+=1
-all_waypoints = real_points # + [get_start] +[get_end]
+print(f'gen_points {all_waypoints[0]}')
 print(f'all_waypoints {all_waypoints[0]}')
 # world.debug.draw_string(all_waypoints[0].transform.location, '^', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
 print(f'get_start {get_start}')
@@ -519,9 +562,19 @@ world.debug.draw_string(get_start.transform.location, 'S', draw_shadow=False, co
 world.debug.draw_string(get_end.transform.location, 'E', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
 print('============================================================')
 try:
-    dstar_lite = DStarLite(world, get_start, get_end, all_waypoints, wp_pts,firetruck)
+    dstar_lite = DStarLite(
+        world,
+        get_start,
+        get_end,
+        all_waypoints,
+        wp_pts,
+        firetruck,
+        waypoint_graph=map_data.waypoint_graph,
+        waypoint_lookup=map_data.waypoint_lookup,
+    )
     dstar_lite.initialize()
-    dstar_lite.main()
+    route = dstar_lite.main()
+    dstar_lite.export_visualization_data(route=route)
 
 finally:
      # Clean up
