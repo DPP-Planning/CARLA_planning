@@ -8,7 +8,6 @@ from PriorityQueueDLite import PriorityQueue, Priority
 import sys
 import os
 from pathlib import Path
-import keyboard
 # print(sys.getrecursionlimit())
 sys.setrecursionlimit(50000)
 
@@ -57,33 +56,92 @@ class DStarLite:
         print('init successfully')
         self.new_edges_and_old_costs = None
         self.path = []
+        self.actual_route = []
+        self.policy_routes = []
+        self.reroute_events = []
+        self.obstacle_events = []
         self.waypoint_graph = waypoint_graph or {}
         self.waypoint_lookup = waypoint_lookup or {waypoint.id: waypoint for waypoint in all_waypoints}
 
-    def _waypoint_ids(self, waypoints):
+    def _waypoint_ids(self, waypoints, unique=False):
         waypoint_ids = []
         seen_ids = set()
         for waypoint in waypoints or []:
             if waypoint is None:
                 continue
             waypoint_id = waypoint.id
-            if waypoint_id in seen_ids:
+            if unique and waypoint_id in seen_ids:
                 continue
             seen_ids.add(waypoint_id)
             waypoint_ids.append(waypoint_id)
         return waypoint_ids
+
+    def extract_policy_route(self, start_waypoint=None, max_steps=None):
+        current = start_waypoint or self.s_current or self.start
+        if current is None:
+            return []
+
+        max_steps = max_steps or max(len(self.all_waypoints) * 2, 1)
+        route = [current]
+        visited_ids = {current.id}
+
+        while current.transform.location.distance(self.goal.transform.location) >= 3.5 and len(route) < max_steps:
+            try:
+                successor = self.successors(current)
+            except Exception:
+                break
+            if not successor:
+                break
+
+            best = None
+            best_cost = float("inf")
+            for candidate in successor:
+                candidate_g = self.g.get(candidate.id, float("inf"))
+                candidate_cost = self.heuristic_c(current, candidate) + candidate_g
+                if candidate_cost < best_cost:
+                    best = candidate
+                    best_cost = candidate_cost
+
+            if best is None or best_cost == float("inf") or best.id in visited_ids:
+                break
+
+            route.append(best)
+            visited_ids.add(best.id)
+            current = best
+
+        return route
+
+    def record_policy_route(self, label, start_waypoint=None, obstacles=None, store=True):
+        route = self.extract_policy_route(start_waypoint=start_waypoint)
+        route_ids = self._waypoint_ids(route)
+        route_record = {
+            "label": label,
+            "start": route_ids[0] if route_ids else None,
+            "goal": self.goal.id if self.goal else None,
+            "route": route_ids,
+            "obstacles": sorted(obstacles or self.all_obst_wps.keys()),
+        }
+        if store:
+            self.policy_routes.append(route_record)
+        return route_record
 
     def export_visualization_data(self, output_path="dlite_route.json", route=None):
         output_path = Path(output_path)
         if not output_path.is_absolute():
             output_path = Path(__file__).resolve().parents[1] / output_path
 
+        actual_route = route or self.actual_route
+
         payload = {
             "start": self.start.id if self.start else None,
             "goal": self.goal.id if self.goal else None,
-            "route": self._waypoint_ids(route or self.path),
-            "explored": self._waypoint_ids(self.path),
+            "route": self._waypoint_ids(actual_route),
+            "actual_route": self._waypoint_ids(actual_route),
+            "planned_routes": self.policy_routes,
+            "reroutes": self.reroute_events,
+            "explored": self._waypoint_ids(self.path, unique=True),
             "obstacles": sorted(self.all_obst_wps.keys()),
+            "obstacle_events": self.obstacle_events,
         }
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -285,8 +343,10 @@ class DStarLite:
         self.s_last = self.start
         self.s_current = self.start
         path = [self.s_current]
+        self.actual_route = path
         flag=0
         self.compute_shortest_path()
+        self.record_policy_route("initial", start_waypoint=self.s_current, obstacles=[])
         
         print(f'self.s_current before while{self.s_current}')
         while self.s_current.transform.location.distance(self.goal.transform.location) >= 3.5:
@@ -310,6 +370,7 @@ class DStarLite:
 
             self.s_current = arg_min
             path.append(self.s_current)
+            self.actual_route = path
             self.vehicle.set_transform(self.s_current.transform)
 
             if self.s_current.transform.location.distance(self.all_waypoints[2824].transform.location)<25 and flag==0:
@@ -337,6 +398,14 @@ class DStarLite:
                 return path
 
             if self.rescan():
+                new_obstacle_ids = sorted(self.new_obst_wps.keys())
+                self.obstacle_events.append(
+                    {
+                        "step": len(path) - 1,
+                        "current": self.s_current.id,
+                        "obstacles": new_obstacle_ids,
+                    }
+                )
                 self.km += self.heuristic_c(self.s_last, self.start)
                 self.s_last = self.start
 
@@ -364,6 +433,16 @@ class DStarLite:
                         self.update_vertex(u)
                 self.new_obst_wps = {}
                 self.compute_shortest_path()
+                reroute_record = self.record_policy_route(
+                    f"reroute {len(self.reroute_events) + 1}",
+                    start_waypoint=self.s_current,
+                    obstacles=new_obstacle_ids,
+                    store=False,
+                )
+                reroute_record["step"] = len(path) - 1
+                reroute_record["current"] = self.s_current.id
+                reroute_record["trigger_obstacles"] = new_obstacle_ids
+                self.reroute_events.append(reroute_record)
         print(f"{self.all_obst_wps}")
         debug_waypoint_id = 1412984381793799066
         if debug_waypoint_id in self.g:

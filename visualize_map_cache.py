@@ -69,11 +69,41 @@ def parse_id_payload(path):
         return {"route": [int(waypoint_id) for waypoint_id in payload]}
 
     parsed = {}
-    for key in ("route", "explored", "obstacles"):
+    actual_route = payload.get("actual_route") or payload.get("route", [])
+    parsed["route"] = [int(waypoint_id) for waypoint_id in actual_route]
+
+    for key in ("explored", "obstacles"):
         parsed[key] = [int(waypoint_id) for waypoint_id in payload.get(key, [])]
     for key in ("start", "goal"):
         if payload.get(key) is not None:
             parsed[key] = int(payload[key])
+
+    parsed["planned_routes"] = [
+        {
+            **route_record,
+            "route": [int(waypoint_id) for waypoint_id in route_record.get("route", [])],
+            "obstacles": [int(waypoint_id) for waypoint_id in route_record.get("obstacles", [])],
+        }
+        for route_record in payload.get("planned_routes", [])
+    ]
+    parsed["reroutes"] = [
+        {
+            **route_record,
+            "route": [int(waypoint_id) for waypoint_id in route_record.get("route", [])],
+            "obstacles": [int(waypoint_id) for waypoint_id in route_record.get("obstacles", [])],
+            "trigger_obstacles": [
+                int(waypoint_id) for waypoint_id in route_record.get("trigger_obstacles", [])
+            ],
+        }
+        for route_record in payload.get("reroutes", [])
+    ]
+    parsed["obstacle_events"] = [
+        {
+            **event,
+            "obstacles": [int(waypoint_id) for waypoint_id in event.get("obstacles", [])],
+        }
+        for event in payload.get("obstacle_events", [])
+    ]
 
     return parsed
 
@@ -192,6 +222,25 @@ def build_explored_segments(graph, explored_ids):
     return segments
 
 
+def add_route_layer(axis, graph, route_ids, color, label, linewidth, alpha=0.9, linestyle="solid", zorder=4):
+    from matplotlib.collections import LineCollection
+
+    route_segments = build_segments_for_ids(graph, route_ids)
+    if not route_segments:
+        return
+
+    route_collection = LineCollection(
+        route_segments,
+        colors=color,
+        linewidths=linewidth,
+        alpha=alpha,
+        linestyles=linestyle,
+        label=label,
+        zorder=zorder,
+    )
+    axis.add_collection(route_collection)
+
+
 def draw_waypoint_marker(axis, graph, waypoint_id, color, label, marker):
     location = graph.get(waypoint_id, {}).get("location")
     if location is None:
@@ -227,6 +276,8 @@ def save_plot(
     route_ids=None,
     explored_ids=None,
     obstacle_ids=None,
+    planned_routes=None,
+    reroutes=None,
     start_id=None,
     goal_id=None,
 ):
@@ -240,7 +291,8 @@ def save_plot(
     route_ids = route_ids or []
     explored_ids = explored_ids or []
     obstacle_ids = obstacle_ids or []
-    route_segments = build_segments_for_ids(graph, route_ids)
+    planned_routes = planned_routes or []
+    reroutes = reroutes or []
     explored_segments = build_explored_segments(graph, explored_ids)
 
     figure, axis = plt.subplots(figsize=(14, 14), dpi=dpi)
@@ -269,16 +321,45 @@ def save_plot(
         )
         axis.add_collection(explored_collection)
 
-    if route_segments:
-        route_collection = LineCollection(
-            route_segments,
-            colors="#dc2626",
-            linewidths=2.8,
-            alpha=0.95,
-            label="chosen route",
+    for route_index, route_record in enumerate(planned_routes):
+        label = route_record.get("label") or f"planned route {route_index + 1}"
+        color = "#2563eb" if route_index == 0 else "#7c3aed"
+        add_route_layer(
+            axis,
+            graph,
+            route_record.get("route", []),
+            color,
+            label,
+            linewidth=1.7,
+            alpha=0.72,
+            linestyle="dashed",
+            zorder=4,
+        )
+
+    for route_index, route_record in enumerate(reroutes):
+        label = route_record.get("label") or f"reroute {route_index + 1}"
+        add_route_layer(
+            axis,
+            graph,
+            route_record.get("route", []),
+            "#7c3aed",
+            label,
+            linewidth=2.2,
+            alpha=0.88,
+            linestyle="dashdot",
             zorder=5,
         )
-        axis.add_collection(route_collection)
+
+    add_route_layer(
+        axis,
+        graph,
+        route_ids,
+        "#dc2626",
+        "actual route taken",
+        linewidth=3.0,
+        alpha=0.96,
+        zorder=6,
+    )
 
     if show_nodes:
         xs = [location[0] for location in locations.values()]
@@ -307,10 +388,24 @@ def save_plot(
                 s=45,
                 c="#111827",
                 marker="x",
-                linewidths=1.7,
-                zorder=7,
+                linewidths=2.4,
+                zorder=8,
                 label="obstacle",
             )
+            for waypoint_id in obstacle_ids:
+                location = graph.get(waypoint_id, {}).get("location")
+                if location is None:
+                    continue
+                axis.annotate(
+                    f"OBS\n{waypoint_id}",
+                    xy=(location[0], location[1]),
+                    xytext=(7, -15),
+                    textcoords="offset points",
+                    fontsize=7,
+                    color="#111827",
+                    weight="bold",
+                    zorder=9,
+                )
 
     if start_id is not None:
         draw_waypoint_marker(axis, graph, start_id, "#16a34a", "START", "o")
@@ -341,6 +436,8 @@ def save_svg(
     route_ids=None,
     explored_ids=None,
     obstacle_ids=None,
+    planned_routes=None,
+    reroutes=None,
     start_id=None,
     goal_id=None,
 ):
@@ -351,7 +448,8 @@ def save_svg(
     route_ids = route_ids or []
     explored_ids = explored_ids or []
     obstacle_ids = obstacle_ids or []
-    route_segments = build_segments_for_ids(graph, route_ids)
+    planned_routes = planned_routes or []
+    reroutes = reroutes or []
     explored_segments = build_explored_segments(graph, explored_ids)
 
     xs = [location[0] for location in locations.values()]
@@ -400,7 +498,26 @@ def save_svg(
                 'stroke="#f59e0b" stroke-width="3" stroke-opacity="0.55"/>\n'
             )
 
-        for start, end in route_segments:
+        for route_index, route_record in enumerate(planned_routes):
+            color = "#2563eb" if route_index == 0 else "#7c3aed"
+            for start, end in build_segments_for_ids(graph, route_record.get("route", [])):
+                x1, y1 = project(start)
+                x2, y2 = project(end)
+                svg_file.write(
+                    f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
+                    f'stroke="{color}" stroke-width="3.5" stroke-opacity="0.72" stroke-dasharray="12 8"/>\n'
+                )
+
+        for route_record in reroutes:
+            for start, end in build_segments_for_ids(graph, route_record.get("route", [])):
+                x1, y1 = project(start)
+                x2, y2 = project(end)
+                svg_file.write(
+                    f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
+                    'stroke="#7c3aed" stroke-width="4.5" stroke-opacity="0.88" stroke-dasharray="14 6 4 6"/>\n'
+                )
+
+        for start, end in build_segments_for_ids(graph, route_ids):
             x1, y1 = project(start)
             x2, y2 = project(end)
             svg_file.write(
@@ -430,7 +547,11 @@ def save_svg(
             x, y = project((location[0], location[1]))
             svg_file.write(
                 f'<text x="{x - 5:.2f}" y="{y + 5:.2f}" fill="#111827" '
-                'font-family="Arial, sans-serif" font-size="18" font-weight="700">x</text>\n'
+                'font-family="Arial, sans-serif" font-size="24" font-weight="700">x</text>\n'
+            )
+            svg_file.write(
+                f'<text x="{x + 12:.2f}" y="{y + 18:.2f}" fill="#111827" '
+                f'font-family="Arial, sans-serif" font-size="13" font-weight="700">OBS {waypoint_id}</text>\n'
             )
 
         for waypoint_id, color, label in (
@@ -449,13 +570,17 @@ def save_svg(
                 f'font-family="Arial, sans-serif" font-size="16" font-weight="700">{label} {waypoint_id}</text>\n'
             )
 
-        svg_file.write('<rect x="40" y="55" width="236" height="82" rx="6" fill="white" fill-opacity="0.86" stroke="#d1d5db"/>\n')
+        svg_file.write('<rect x="40" y="55" width="268" height="130" rx="6" fill="white" fill-opacity="0.86" stroke="#d1d5db"/>\n')
         svg_file.write('<line x1="58" y1="78" x2="108" y2="78" stroke="#9ca3af" stroke-width="2" stroke-opacity="0.5"/>\n')
         svg_file.write('<text x="120" y="83" fill="#374151" font-family="Arial, sans-serif" font-size="14">possible graph edges</text>\n')
-        svg_file.write('<line x1="58" y1="102" x2="108" y2="102" stroke="#f59e0b" stroke-width="4" stroke-opacity="0.65"/>\n')
-        svg_file.write('<text x="120" y="107" fill="#374151" font-family="Arial, sans-serif" font-size="14">explored route space</text>\n')
-        svg_file.write('<line x1="58" y1="126" x2="108" y2="126" stroke="#dc2626" stroke-width="6"/>\n')
-        svg_file.write('<text x="120" y="131" fill="#374151" font-family="Arial, sans-serif" font-size="14">chosen route</text>\n')
+        svg_file.write('<line x1="58" y1="102" x2="108" y2="102" stroke="#2563eb" stroke-width="3" stroke-dasharray="10 6"/>\n')
+        svg_file.write('<text x="120" y="107" fill="#374151" font-family="Arial, sans-serif" font-size="14">initial planned route</text>\n')
+        svg_file.write('<line x1="58" y1="126" x2="108" y2="126" stroke="#7c3aed" stroke-width="4" stroke-dasharray="12 5 4 5"/>\n')
+        svg_file.write('<text x="120" y="131" fill="#374151" font-family="Arial, sans-serif" font-size="14">D* Lite reroute</text>\n')
+        svg_file.write('<line x1="58" y1="150" x2="108" y2="150" stroke="#dc2626" stroke-width="6"/>\n')
+        svg_file.write('<text x="120" y="155" fill="#374151" font-family="Arial, sans-serif" font-size="14">actual route taken</text>\n')
+        svg_file.write('<text x="80" y="178" fill="#111827" font-family="Arial, sans-serif" font-size="18" font-weight="700">x</text>\n')
+        svg_file.write('<text x="120" y="179" fill="#374151" font-family="Arial, sans-serif" font-size="14">obstacle waypoint</text>\n')
 
         svg_file.write("</svg>\n")
 
@@ -467,7 +592,21 @@ def resolve_visualization_inputs(graph, args):
 
     route_ids = route_payload.get("route", [])
     explored_ids = explored_payload.get("route", []) or explored_payload.get("explored", [])
-    obstacle_ids = obstacle_payload.get("route", []) or obstacle_payload.get("obstacles", [])
+    obstacle_ids = set(obstacle_payload.get("route", []) or obstacle_payload.get("obstacles", []))
+    obstacle_ids.update(route_payload.get("obstacles", []))
+
+    planned_routes = route_payload.get("planned_routes", [])
+    reroutes = route_payload.get("reroutes", [])
+    planned_routes = [
+        route_record
+        for route_record in planned_routes
+        if not str(route_record.get("label", "")).lower().startswith("reroute")
+    ]
+    for event in route_payload.get("obstacle_events", []):
+        obstacle_ids.update(event.get("obstacles", []))
+    for route_record in reroutes:
+        obstacle_ids.update(route_record.get("obstacles", []))
+        obstacle_ids.update(route_record.get("trigger_obstacles", []))
 
     start_id = args.start_id or route_payload.get("start")
     goal_id = args.goal_id or route_payload.get("goal")
@@ -486,8 +625,18 @@ def resolve_visualization_inputs(graph, args):
         route_ids = find_shortest_route(graph, start_id, goal_id, blocked_ids=obstacle_ids)
         if not route_ids:
             print(f"No route found from {start_id} to {goal_id}.")
+        elif not planned_routes:
+            planned_routes = [
+                {
+                    "label": "pre-obstacle shortest route",
+                    "start": start_id,
+                    "goal": goal_id,
+                    "route": route_ids,
+                    "obstacles": sorted(obstacle_ids),
+                }
+            ]
 
-    return route_ids, explored_ids, obstacle_ids, start_id, goal_id
+    return route_ids, explored_ids, sorted(obstacle_ids), planned_routes, reroutes, start_id, goal_id
 
 
 def print_waypoint_summary(graph, limit):
@@ -526,7 +675,15 @@ def main():
         print_waypoint_summary(graph, args.list_limit)
         return
 
-    route_ids, explored_ids, obstacle_ids, start_id, goal_id = resolve_visualization_inputs(graph, args)
+    (
+        route_ids,
+        explored_ids,
+        obstacle_ids,
+        planned_routes,
+        reroutes,
+        start_id,
+        goal_id,
+    ) = resolve_visualization_inputs(graph, args)
     if output_path.suffix.lower() == ".svg":
         save_svg(
             graph,
@@ -535,6 +692,8 @@ def main():
             route_ids=route_ids,
             explored_ids=explored_ids,
             obstacle_ids=obstacle_ids,
+            planned_routes=planned_routes,
+            reroutes=reroutes,
             start_id=start_id,
             goal_id=goal_id,
         )
@@ -547,6 +706,8 @@ def main():
             route_ids=route_ids,
             explored_ids=explored_ids,
             obstacle_ids=obstacle_ids,
+            planned_routes=planned_routes,
+            reroutes=reroutes,
             start_id=start_id,
             goal_id=goal_id,
         )
