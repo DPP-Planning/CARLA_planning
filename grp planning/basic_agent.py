@@ -272,7 +272,7 @@ class BasicAgent(object):
         """Get method for protected member local planner"""
         return self._global_planner
 
-    def set_destination(self, end_location, start_location=None, new_obstacle=None):
+    def set_destination(self, end_location, start_location=None):
         """
         This method creates a list of waypoints between a starting and ending location,
         based on the route returned by the global router, and adds it to the local planner.
@@ -325,7 +325,7 @@ class BasicAgent(object):
             end_waypoint = self._map.get_waypoint(end_location)
             self._destination = end_location
 
-            route_trace = self.trace_route(start_waypoint, end_waypoint, new_obstacle)
+            route_trace = self.trace_route(start_waypoint, end_waypoint)
         else:
             route_trace = end_location
             clean_queue = True
@@ -546,7 +546,7 @@ class BasicAgent(object):
             clean_queue=clean_queue
         )
 
-    def trace_route(self, start_waypoint, end_waypoint, new_obstacle=None):
+    def trace_route(self, start_waypoint, end_waypoint):
         """
         Calculates the shortest route between a starting and ending waypoint.
 
@@ -558,7 +558,14 @@ class BasicAgent(object):
         start_location = start_waypoint.transform.location
         end_location = end_waypoint.transform.location
 
-        return self._global_planner.trace_route(start_location, end_location, self._world, new_obstacle)
+        seen_obstacles_snapshot = self._get_seen_obstacles_snapshot()
+
+        return self._global_planner.trace_route(
+            start_location,
+            end_location,
+            self._world,
+            seen_obstacles_snapshot
+        )
 
     def _seen_obstacle_collisions_at_waypoint(self, waypoint_or_location):
         """Return seen obstacle actors whose mesh footprint contains the given waypoint/location."""
@@ -617,15 +624,12 @@ class BasicAgent(object):
 
         # Sensor-based blocking check over current plan
         min_vehicle_distance = 25
-        obstacle_wpt = None
         ego_location = self._vehicle.get_location()
-        current_obstacles = self._get_seen_obstacle_waypoints()
-        replanning_obstacles = current_obstacles if current_obstacles else []
         plan_queue = list(self._local_planner.get_plan())
         plan_waypoints = [wp for wp, _ in plan_queue]
         path_blocked_by_bbox = False
-        blocking_obstacle_wpt = None
         blocking_candidates = []
+
 
         for obs_data in self._get_seen_obstacles_snapshot():
             actor = obs_data['actor']
@@ -651,34 +655,6 @@ class BasicAgent(object):
             if path_blocked_by_bbox:
                 break
 
-        if path_blocked_by_bbox and blocking_candidates:
-            closest_actor = min(
-                blocking_candidates,
-                key=lambda act: act.get_location().distance(ego_location)
-            )
-            blocking_obstacle_wpt = self._map.get_waypoint(
-                closest_actor.get_location(),
-                lane_type=carla.LaneType.Any
-            )
-            obstacle_wpt = blocking_obstacle_wpt
-            affected_by_vehicle = True
-        else:
-            # max_vehicle_distance = 25
-            max_vehicle_distance = 15
-            affected_by_vehicle, _, _, obstacle_wpt = self._vehicle_obstacle_detected(vehicle_list, max_vehicle_distance)
-
-        left_waypoint = obstacle_wpt.get_left_lane() if obstacle_wpt else None
-        right_waypoint = obstacle_wpt.get_right_lane() if obstacle_wpt else None
-        
-        if left_waypoint and left_waypoint.lane_type != carla.LaneType.Driving: left_waypoint = None
-        if right_waypoint and right_waypoint.lane_type != carla.LaneType.Driving: right_waypoint = None
-
-        print("left waypoint: ", left_waypoint)
-        print("right waypoint: ", right_waypoint)
-
-        if affected_by_vehicle:
-            hazard_obstacle = True
-
         # Check if the vehicle is affected by a red traffic light
         max_tlight_distance = self._base_tlight_threshold + self._speed_ratio * vehicle_speed
         affected_by_tlight, _ = self._affected_by_traffic_light(self._lights_list, max_tlight_distance)
@@ -690,24 +666,32 @@ class BasicAgent(object):
         if hazard_obstacle and hazard_light:
             control = self.add_emergency_stop(control)
         elif hazard_obstacle:
-            adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(obstacle_wpt)
 
-            # left_blocked = (left_waypoint is None) or bool(self._seen_obstacle_collisions_at_waypoint(left_waypoint))
-            # right_blocked = (right_waypoint is None) or bool(self._seen_obstacle_collisions_at_waypoint(right_waypoint))
+            adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(blocking_candidates[0])
             
             # if obstacle_wpt and (adjacent_lane_blocked or (left_blocked and right_blocked)):
-            if obstacle_wpt and adjacent_lane_blocked:
+            if blocking_candidates and adjacent_lane_blocked:
                 print("Adjacent lane waypoint(s) blocked near obstacle. Emergency stopping.")
                 control = self.add_emergency_stop(control)
-            elif obstacle_wpt and (self._previous_obstacle is None or self._previous_obstacle.transform.location.distance(obstacle_wpt.transform.location) > 0.5):
-                print("Entered obstacle resolution")
-                print("Replanning around obstacle: ", obstacle_wpt.transform.location)
-                self._previous_obstacle = obstacle_wpt
-                self.set_destination(self._destination, None, obstacle_wpt)
 
-                self._world.debug.draw_string(obstacle_wpt.transform.location, 'Obstacle', draw_shadow=False,
-                color=carla.Color(r=255, g=0, b=0), life_time=15.0,
-                persistent_lines=True)
+            # Currently not considering if any of the obstacles are moving,
+            # just if it is the same vehicles that have been detected before, 
+            # then we can assume that they are not moving and thus we should stop.
+            # Though later we should take these agents movement into consideration
+            elif blocking_candidates and (self._previous_obstacle is None or set(blocking_candidates) != self._previous_obstacle):
+                print("Entered obstacle resolution")
+                print("Replanning around obstacle: ", end="")
+                for candidate in blocking_candidates:
+                    print(candidate.location, end="; ")
+                print()
+
+                self._previous_obstacle = set(blocking_candidates)
+                self.set_destination(self._destination, None)
+
+                for candidate in blocking_candidates:
+                    self._world.debug.draw_string(candidate.location, 'Obstacle', draw_shadow=False,
+                    color=carla.Color(r=255, g=0, b=0), life_time=15.0,
+                    persistent_lines=True)
 
         self._prev_obs = hazard_obstacle
         self._prev_lane = self._map.get_waypoint(self._vehicle.get_location()).lane_id
@@ -869,22 +853,23 @@ class BasicAgent(object):
         left_wp = obstacle_wpt.get_left_lane() if obstacle_wpt else None
         right_wp = obstacle_wpt.get_right_lane() if obstacle_wpt else None
         
-        if left_wp and left_wp.lane_type != carla.LaneType.Driving: left_wp = None
-        if right_wp and right_wp.lane_type != carla.LaneType.Driving: right_wp = None
+        if left_wp and left_wp.lane_type != carla.LaneType.Driving: left_wp = True
+        if right_wp and right_wp.lane_type != carla.LaneType.Driving: right_wp = True
 
         candidate_wps = [wp for wp in (left_wp, right_wp) if wp is not None]
         
         if not candidate_wps:
-            return True
+            return left_wp, right_wp
 
         obs_data = self._get_seen_obstacles_snapshot()
 
         if len(obs_data) == 0:
             print("No Obstacles")
-            return False
+            return False, False
 
         candidates_blocked = []
 
+        # Convert the output into a pair of booleans for left and right lane blockage
         for candidate_wp in candidate_wps:
             print(f"Candidate: {candidate_wp.transform.location}")
             lane_blocked = False

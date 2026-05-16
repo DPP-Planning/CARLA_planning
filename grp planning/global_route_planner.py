@@ -39,14 +39,14 @@ class GlobalRoutePlanner(object):
         self._find_loose_ends()
         self._lane_change_link()
 
-    def trace_route(self, origin, destination, world, new_obstacle=None):
+    def trace_route(self, origin, destination, world, seen_obstacles_snapshot=None):
         """
         This method returns list of (carla.Waypoint, RoadOption)
         from origin to destination
         """
         # New parameter: new_obstacle. This feeds the obstacle into the A*.
         full_route = []
-        path = self._path_search(origin, destination, world, new_obstacle)
+        path = self._path_search(origin, destination, world, seen_obstacles_snapshot)
 
         for route in path:
 
@@ -101,6 +101,22 @@ class GlobalRoutePlanner(object):
             print("new destination_waypoint: ", route_trace[-1][0])
 
             full_route.append(route_trace)
+
+        i = 0
+        for route in full_route:
+            for w, direction in route:
+                # print(w[0].transform.location.x, ",",w[0].transform.location.y, w[1])
+                if i % 10 == 0:
+                    # print(w.transform.location)
+                    world.debug.draw_string(w.transform.location, f'{i}', draw_shadow=False,
+                    color=carla.Color(r=255, g=0, b=0), life_time=10.0,
+                    persistent_lines=True)
+                else:
+                    # print(w.transform.location)
+                    world.debug.draw_string(w.transform.location, f'{i}', draw_shadow=False,
+                    color = carla.Color(r=0, g=0, b=255), life_time=10.0,
+                    persistent_lines=True)
+                i += 1
 
         return full_route
 
@@ -307,7 +323,7 @@ class GlobalRoutePlanner(object):
         l2 = np.array(self._graph.nodes[n2]['vertex'])
         return np.linalg.norm(l1-l2)
 
-    def _path_search(self, origin, destination, world, new_obstacle=None):
+    def _path_search(self, origin, destination, world, seen_obstacles_snapshot=None):
         """
         This function finds the shortest path connecting origin and destination
         using A* search with distance heuristic.
@@ -325,25 +341,39 @@ class GlobalRoutePlanner(object):
 
         start, end = self._localize(origin), self._localize(destination)
 
-        route = a_star(origin_waypoint, destination_waypoint, new_obstacle)
+        route = a_star(origin_waypoint, destination_waypoint, world, seen_obstacles_snapshot)
+
+        # i = 0
+        # for w in route:
+        #         # print(w[0].transform.location.x, ",",w[0].transform.location.y, w[1])
+        #     if i % 10 == 0:
+        #         world.debug.draw_string(w.transform.location, f'{i}', draw_shadow=False,
+        #         color=carla.Color(r=255, g=0, b=0), life_time=120.0,
+        #         persistent_lines=True)
+        #     else:
+        #         world.debug.draw_string(w.transform.location, f'{i}', draw_shadow=False,
+        #         color = carla.Color(r=0, g=0, b=255), life_time=60.0,
+        #         persistent_lines=True)
+        #     i += 1
 
         print("exit tracing")
 
-        i = 0
-        for w in route:
-            # print(w[0].transform.location.x, ",",w[0].transform.location.y, w[1])
-            if i % 10 == 0:
-                # print(w.transform.location)
-                world.debug.draw_string(w.transform.location, f'{i}', draw_shadow=False,
-                color=carla.Color(r=255, g=0, b=0), life_time=10.0,
-                persistent_lines=True)
-            else:
-                # print(w.transform.location)
-                world.debug.draw_string(w.transform.location, f'{i}', draw_shadow=False,
-                color = carla.Color(r=0, g=0, b=255), life_time=10.0,
-                persistent_lines=True)
-            i += 1
+        # i = 0
+        # for w in route:
+        #     # print(w[0].transform.location.x, ",",w[0].transform.location.y, w[1])
+        #     if i % 10 == 0:
+        #         # print(w.transform.location)
+        #         world.debug.draw_string(w.transform.location, f'{i}', draw_shadow=False,
+        #         color=carla.Color(r=255, g=0, b=0), life_time=10.0,
+        #         persistent_lines=True)
+        #     else:
+        #         # print(w.transform.location)
+        #         world.debug.draw_string(w.transform.location, f'{i}', draw_shadow=False,
+        #         color = carla.Color(r=0, g=0, b=255), life_time=10.0,
+        #         persistent_lines=True)
+        #     i += 1
 
+        # Dict to assign a waypoint path list to an edge of only the waypoints that the route is supposed to travel on
         waypoint_edge_dict = {}
         for waypoint in route:
             edge = self._localize(waypoint.transform.location)
@@ -381,6 +411,7 @@ class GlobalRoutePlanner(object):
 
         print("Edge pairs: ", edge_route)
 
+        # edge
         current_start = self._localize(route[0].transform.location)[0]
 
         # Initializes routing with starting and ending waypoints to insert lane changes in between.
@@ -398,20 +429,21 @@ class GlobalRoutePlanner(object):
                     routing[current_index].append(val)
             else:
                 routing[current_index].append(waypoint_edge_dict[key, val][0])
-                print("start_waypoint: ", waypoint_edge_dict[key, val][0])
+                print("lane start_waypoint: ", waypoint_edge_dict[key, val][0])
                 if val not in routing[current_index]:
                     routing[current_index].append(key)
                     routing[current_index].append(val)
                 new_path = False
             
             # if the val isn't a key, this indicates that the ending
-            # edge won't be used to traverse on, thus a lance change
+            # edge won't be used to traverse on, thus a lane change
             # or the car has reached its destination.
             # With that, a ending point is given, and if its a lane
             # change, then a new list is started for a new pathing.
+            print("waypoint edge dict: ", key, val, waypoint_edge_dict[key, val])
             if i != len(edge_route) - 1 and val != list(edge_route.keys())[i + 1]:
-                routing[current_index].append(waypoint_edge_dict[key, val][-2])
-                print("end_waypoint: ", waypoint_edge_dict[key, val][-2])
+                routing[current_index].append(waypoint_edge_dict[key, val][-1])
+                print("lane end_waypoint: ", waypoint_edge_dict[key, val][-1])
                 routing.append([])
                 current_index += 1
                 new_path = True

@@ -32,8 +32,8 @@ class car_mesh:
 		for v in self.corners:
 			print(" - (X: {}, Y:{})".format(v.x, v.y))
 
-	def contains_waypoint(self, waypoint_or_location):
-		"""Return True if the waypoint/location falls inside this mesh footprint (XY plane)."""
+	def contains_waypoint(self, waypoint_or_location, radius_m=0.0):
+		"""Return True if waypoint/location is inside mesh footprint or within radius_m of its XY edges."""
 		if waypoint_or_location is None or len(self.corners) < 3:
 			return False
 
@@ -59,7 +59,42 @@ class car_mesh:
 				inside = not inside
 			j = i
 
-		return inside
+		if inside:
+			return True
+
+		if radius_m <= 0.0:
+			return False
+
+		# Outside polygon: check minimum distance to polygon edges in XY plane.
+		for i in range(len(vertices)):
+			a = vertices[i]
+			b = vertices[(i + 1) % len(vertices)]
+
+			ax, ay = a.x, a.y
+			bx, by = b.x, b.y
+			px, py = x, y
+
+			abx = bx - ax
+			aby = by - ay
+			ab_len_sq = (abx * abx) + (aby * aby)
+
+			if ab_len_sq <= 1e-12:
+				dx = px - ax
+				dy = py - ay
+				dist = math.sqrt((dx * dx) + (dy * dy))
+			else:
+				t = ((px - ax) * abx + (py - ay) * aby) / ab_len_sq
+				t = max(0.0, min(1.0, t))
+				closest_x = ax + t * abx
+				closest_y = ay + t * aby
+				dx = px - closest_x
+				dy = py - closest_y
+				dist = math.sqrt((dx * dx) + (dy * dy))
+
+			if dist <= radius_m:
+				return True
+
+		return False
 
 def handle_collision(data):
 	print("* Collision Detected! *")
