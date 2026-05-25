@@ -148,6 +148,7 @@ class BasicAgent(object):
         # self._obstacle_ttl_ticks = 8
         self._obstacle_ttl_ticks = 200
         self._position_change_threshold = 0.05
+        self._obstacle_prediction_seconds = 1.0
 
         # Lane Change
         self._lc_attempts = 0
@@ -221,6 +222,8 @@ class BasicAgent(object):
             self._max_brake = opt_dict['max_brake']
         if 'offset' in opt_dict:
             self._offset = opt_dict['offset']
+        if 'obstacle_prediction_seconds' in opt_dict:
+            self._obstacle_prediction_seconds = float(opt_dict['obstacle_prediction_seconds'])
 
         # Initialize the planners
         # if isinstance(grp_inst, GlobalRoutePlanner):
@@ -313,7 +316,10 @@ class BasicAgent(object):
 
         if type(end_location) is not list:
             if not start_location:
-                start_location = self._local_planner.target_waypoint.transform.location
+                if not isinstance(self._local_planner.target_waypoint, carla.Waypoint):
+                    start_location = self._local_planner.target_waypoint
+                else:
+                    start_location = self._local_planner.target_waypoint.transform.location
                 # start_location = self._vehicle.get_location()
                 clean_queue = True
             else:
@@ -667,7 +673,13 @@ class BasicAgent(object):
             control = self.add_emergency_stop(control)
         elif hazard_obstacle:
 
-            adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(blocking_candidates[0])
+            obstacle_loc = self.get_detected_agent_attribute(
+                blocking_candidates[0].id,
+                'location',
+                default=blocking_candidates[0].get_location()
+            )
+            obstacle_wpt = self._map.get_waypoint(obstacle_loc, lane_type=carla.LaneType.Any)
+            adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(obstacle_wpt)
             
             # if obstacle_wpt and (adjacent_lane_blocked or (left_blocked and right_blocked)):
             if blocking_candidates and adjacent_lane_blocked:
@@ -682,14 +694,16 @@ class BasicAgent(object):
                 print("Entered obstacle resolution")
                 print("Replanning around obstacle: ", end="")
                 for candidate in blocking_candidates:
-                    print(candidate.location, end="; ")
+                    candidate_loc = self.get_detected_agent_attribute(candidate.id, 'location', default=candidate.get_location())
+                    print(candidate_loc, end="; ")
                 print()
 
                 self._previous_obstacle = set(blocking_candidates)
                 self.set_destination(self._destination, None)
 
                 for candidate in blocking_candidates:
-                    self._world.debug.draw_string(candidate.location, 'Obstacle', draw_shadow=False,
+                    candidate_loc = self.get_detected_agent_attribute(candidate.id, 'location', default=candidate.get_location())
+                    self._world.debug.draw_string(candidate_loc, 'Obstacle', draw_shadow=False,
                     color=carla.Color(r=255, g=0, b=0), life_time=15.0,
                     persistent_lines=True)
 
@@ -728,10 +742,18 @@ class BasicAgent(object):
                 previous_entry = self._seen_obstacles.get(obstacle_actor.id)
                 previous_location = previous_entry['location'] if previous_entry else None
                 position_changed = True
+                position_vector_xy = None
                 if previous_location:
                     position_changed = (
                         current_location.distance(previous_location) > self._position_change_threshold
                     )
+                    raw_position_vector_xy = np.array([
+                        current_location.x - previous_location.x,
+                        current_location.y - previous_location.y
+                    ], dtype=float)
+                    vector_norm = np.linalg.norm(raw_position_vector_xy)
+                    if vector_norm > 0.0:
+                        position_vector_xy = raw_position_vector_xy / vector_norm
 
                 self._seen_obstacles[obstacle_actor.id] = {
                     'actor': obstacle_actor,
@@ -739,7 +761,8 @@ class BasicAgent(object):
                     'ttl': self._obstacle_ttl_ticks,
                     'location': current_location,
                     'velocity': current_velocity,
-                    'position_changed': position_changed
+                    'position_changed': position_changed,
+                    'position_vector_xy': position_vector_xy
                 }
         except RuntimeError:
             return
@@ -754,10 +777,35 @@ class BasicAgent(object):
                     'ttl': obs_data['ttl'],
                     'location': obs_data.get('location'),
                     'velocity': obs_data.get('velocity'),
-                    'position_changed': obs_data.get('position_changed', False)
+                    'position_changed': obs_data.get('position_changed', False),
+                    'position_vector_xy': obs_data.get('position_vector_xy')
                 }
                 for obs_data in self._seen_obstacles.values()
             ]
+
+    def get_detected_agent(self, actor_id):
+        """Return a copy of the stored data for a detected agent by actor id, or None."""
+        with self._seen_obstacles_lock:
+            obs_data = self._seen_obstacles.get(actor_id)
+            if obs_data is None:
+                return None
+
+            return {
+                'actor': obs_data['actor'],
+                'mesh': obs_data['mesh'],
+                'ttl': obs_data['ttl'],
+                'location': obs_data.get('location'),
+                'velocity': obs_data.get('velocity'),
+                'position_changed': obs_data.get('position_changed', False),
+                'position_vector_xy': obs_data.get('position_vector_xy')
+            }
+
+    def get_detected_agent_attribute(self, actor_id, attribute_name, default=None):
+        """Return one stored attribute for a detected agent by actor id, else default."""
+        agent_data = self.get_detected_agent(actor_id)
+        if agent_data is None:
+            return default
+        return agent_data.get(attribute_name, default)
 
     def _tick_seen_obstacles(self):
         """Refresh obstacle TTL each tick and remove stale observations."""
@@ -785,20 +833,34 @@ class BasicAgent(object):
             refreshed_ttl = obs_data['ttl'] - 1
             previous_location = obs_data.get('location')
             position_changed = True
+            position_vector_xy = None
             if previous_location:
                 position_changed = (
                     refreshed_location.distance(previous_location) > self._position_change_threshold
                 )
+                raw_position_vector_xy = np.array([
+                    refreshed_location.x - previous_location.x,
+                    refreshed_location.y - previous_location.y
+                ], dtype=float)
+                vector_norm = np.linalg.norm(raw_position_vector_xy)
+                if vector_norm > 0.0:
+                    position_vector_xy = raw_position_vector_xy / vector_norm
 
             refreshed_data[obs_id] = {
                 'mesh': refreshed_mesh,
                 'ttl': refreshed_ttl,
                 'location': refreshed_location,
                 'velocity': refreshed_velocity,
-                'position_changed': position_changed
+                'position_changed': position_changed,
+                'position_vector_xy': position_vector_xy
             }
 
             self._draw_obstacle_bbox(refreshed_mesh)
+            self._draw_predicted_obstacle_bbox(
+                refreshed_mesh,
+                refreshed_velocity,
+                self._obstacle_prediction_seconds
+            )
 
             if refreshed_ttl <= 0:
                 expired_ids.add(obs_id)
@@ -817,6 +879,7 @@ class BasicAgent(object):
                 self._seen_obstacles[obs_id]['location'] = refreshed['location']
                 self._seen_obstacles[obs_id]['velocity'] = refreshed['velocity']
                 self._seen_obstacles[obs_id]['position_changed'] = refreshed['position_changed']
+                self._seen_obstacles[obs_id]['position_vector_xy'] = refreshed['position_vector_xy']
 
     def _draw_obstacle_bbox(self, mesh_obj):
         """Draw the obstacle footprint by connecting all bounding-box corners with lines."""
@@ -836,6 +899,45 @@ class BasicAgent(object):
                 end,
                 thickness=0.08,
                 color=carla.Color(r=255, g=140, b=0),
+                life_time=0.2,
+                persistent_lines=False
+            )
+
+    def _draw_predicted_obstacle_bbox(self, mesh_obj, velocity, prediction_seconds):
+        """Draw predicted obstacle footprint in blue using velocity over prediction_seconds."""
+        corners = mesh_obj.corners
+        if len(corners) < 2:
+            return
+        if velocity is None:
+            return
+        if prediction_seconds <= 0.0:
+            return
+
+        velocity_xy = np.array([velocity.x, velocity.y], dtype=float)
+        if np.linalg.norm(velocity_xy) <= 0.0:
+            return
+
+        displacement_xy = velocity_xy * float(prediction_seconds)
+        dx = float(displacement_xy[0])
+        dy = float(displacement_xy[1])
+
+        predicted_corners = [
+            carla.Location(x=float(c.x + dx), y=float(c.y + dy), z=float(c.z))
+            for c in corners
+        ]
+
+        cx = sum(p.x for p in predicted_corners) / len(predicted_corners)
+        cy = sum(p.y for p in predicted_corners) / len(predicted_corners)
+        ordered_corners = sorted(predicted_corners, key=lambda p: np.arctan2(p.y - cy, p.x - cx))
+
+        for i in range(len(ordered_corners)):
+            start = ordered_corners[i]
+            end = ordered_corners[(i + 1) % len(ordered_corners)]
+            self._world.debug.draw_line(
+                start,
+                end,
+                thickness=0.08,
+                color=carla.Color(r=0, g=100, b=255),
                 life_time=0.2,
                 persistent_lines=False
             )
