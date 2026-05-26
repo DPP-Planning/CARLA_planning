@@ -633,7 +633,6 @@ class BasicAgent(object):
         ego_location = self._vehicle.get_location()
         plan_queue = list(self._local_planner.get_plan())
         plan_waypoints = [wp for wp, _ in plan_queue]
-        path_blocked_by_bbox = False
         blocking_candidates = []
 
 
@@ -653,12 +652,11 @@ class BasicAgent(object):
                     continue
 
                 if obs_mesh.contains_waypoint(plan_wp):
-                    path_blocked_by_bbox = True
                     hazard_obstacle = True
                     blocking_candidates.append(actor)
                     break
 
-            if path_blocked_by_bbox:
+            if hazard_obstacle:
                 break
 
         # Check if the vehicle is affected by a red traffic light
@@ -678,8 +676,13 @@ class BasicAgent(object):
                 'location',
                 default=blocking_candidates[0].get_location()
             )
+
             obstacle_wpt = self._map.get_waypoint(obstacle_loc, lane_type=carla.LaneType.Any)
+
             adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(obstacle_wpt)
+
+            if adjacent_lane_blocked:
+                print("adjacent lane blocked: ", obstacle_wpt)
             
             # if obstacle_wpt and (adjacent_lane_blocked or (left_blocked and right_blocked)):
             if blocking_candidates and adjacent_lane_blocked:
@@ -740,6 +743,7 @@ class BasicAgent(object):
             current_velocity = obstacle_actor.get_velocity()
             with self._seen_obstacles_lock:
                 previous_entry = self._seen_obstacles.get(obstacle_actor.id)
+                is_new_obstacle = previous_entry is None
                 previous_location = previous_entry['location'] if previous_entry else None
                 position_changed = True
                 position_vector_xy = None
@@ -764,6 +768,13 @@ class BasicAgent(object):
                     'position_changed': position_changed,
                     'position_vector_xy': position_vector_xy
                 }
+
+                if is_new_obstacle:
+                    print(
+                        f"[Obstacle Detected] id={obstacle_actor.id}, "
+                        f"type={obstacle_actor.type_id}, "
+                        f"location={current_location}"
+                    )
         except RuntimeError:
             return
 
@@ -947,60 +958,31 @@ class BasicAgent(object):
         if not obstacle_wpt:
             return False
 
-        # left_wp = obstacle_wpt.get_left_lane()
-        # right_wp = obstacle_wpt.get_right_lane()
-        # candidate_wps = [wp for wp in (left_wp, right_wp) if wp and wp.lane_type == carla.LaneType.Driving]
-
-
-        left_wp = obstacle_wpt.get_left_lane() if obstacle_wpt else None
-        right_wp = obstacle_wpt.get_right_lane() if obstacle_wpt else None
-        
-        if left_wp and left_wp.lane_type != carla.LaneType.Driving: left_wp = True
-        if right_wp and right_wp.lane_type != carla.LaneType.Driving: right_wp = True
-
-        candidate_wps = [wp for wp in (left_wp, right_wp) if wp is not None]
-        
-        if not candidate_wps:
-            return left_wp, right_wp
-
+        left_wp = obstacle_wpt.get_left_lane()
+        right_wp = obstacle_wpt.get_right_lane()
         obs_data = self._get_seen_obstacles_snapshot()
 
-        if len(obs_data) == 0:
-            print("No Obstacles")
-            return False, False
+        def waypoint_blocked_by_seen_obstacle(candidate_wp):
+            if candidate_wp is None or candidate_wp.lane_type != carla.LaneType.Driving:
+                return True
 
-        candidates_blocked = []
-
-        # Convert the output into a pair of booleans for left and right lane blockage
-        for candidate_wp in candidate_wps:
-            print(f"Candidate: {candidate_wp.transform.location}")
-            lane_blocked = False
-
+            candidate_loc = candidate_wp.transform.location
             for obs in obs_data:
                 obs_mesh = obs['mesh']
+                if obs_mesh.contains_waypoint(candidate_loc):
+                    return True
+            return False
 
-                can_distance = obs_mesh.center.location.distance(candidate_wp.transform.location)
-                contains_wpt = obs_mesh.contains_waypoint(candidate_wp.transform.location)
+        left_blocked = waypoint_blocked_by_seen_obstacle(left_wp)
+        right_blocked = waypoint_blocked_by_seen_obstacle(right_wp)
 
-                blocking = can_distance < 0.2 or contains_wpt
+        print("left_blocked:", left_blocked, "right_blocked:", right_blocked)
 
-                if blocking:
-                    print(f"- Obstacle blocking, distance from candidate {can_distance}")
-                    print(f"- Candidate Lane is Blocked, proceeding...")
-                    lane_blocked = True
-                    break
-                else:
-                    print(f"- Obstacle not blocking, distance from candidate {can_distance}")
-            
-            # Draw String Debug
-            if lane_blocked:
-                self._draw_string("Blocked", candidate_wp.transform.location, color=carla.Color(r=255,g=55,b=0))
-            else:
-                self._draw_string("Open Lane", candidate_wp.transform.location, color=carla.Color(r=0,g=55,b=255))
+        if left_blocked and right_blocked:
+            return True
+        else:
+            return False
 
-            candidates_blocked.append(lane_blocked)
-
-        return False not in candidates_blocked
 
     def _get_seen_obstacle_waypoints(self):
         """Convert current obstacle set into waypoints for planning."""
@@ -1109,143 +1091,6 @@ class BasicAgent(object):
                 return (True, traffic_light)
 
         return (False, None)
-
-    def _vehicle_obstacle_detected(self, vehicle_list=None, max_distance=None, up_angle_th=90, low_angle_th=0, lane_offset=0):
-        """
-        Method to check if there is a vehicle in front of the agent blocking its path.
-
-            :param vehicle_list (list of carla.Vehicle): list contatining vehicle objects.
-                If None, all vehicle in the scene are used
-            :param max_distance: max freespace to check for obstacles.
-                If None, the base threshold value is used
-        """
-        def get_route_polygon():
-            route_bb = []
-            extent_y = self._vehicle.bounding_box.extent.y
-            r_ext = extent_y + self._offset
-            l_ext = -extent_y + self._offset
-            r_vec = ego_transform.get_right_vector()
-            p1 = ego_location + carla.Location(r_ext * r_vec.x, r_ext * r_vec.y)
-            p2 = ego_location + carla.Location(l_ext * r_vec.x, l_ext * r_vec.y)
-            route_bb.extend([[p1.x, p1.y, p1.z], [p2.x, p2.y, p2.z]])
-
-            for pt, _ in self._local_planner.get_plan():
-
-                if isinstance(pt, carla.Waypoint):
-                    wp = pt
-
-                    if ego_location.distance(wp.transform.location) > max_distance:
-                        break
-
-                    r_vec = wp.transform.get_right_vector()
-                    p1 = wp.transform.location + carla.Location(r_ext * r_vec.x, r_ext * r_vec.y)
-                    p2 = wp.transform.location + carla.Location(l_ext * r_vec.x, l_ext * r_vec.y)
-                    route_bb.extend([[p1.x, p1.y, p1.z], [p2.x, p2.y, p2.z]])
-
-                elif isinstance(pt, carla.Location):
-                    loc = pt
-
-                    if ego_location.distance(loc) > max_distance:
-                        break
-
-                    wp = self._map.get_waypoint(loc)
-
-                    r_vec = wp.transform.get_right_vector()
-                    p1 = wp.transform.location + carla.Location(r_ext * r_vec.x, r_ext * r_vec.y)
-                    p2 = wp.transform.location + carla.Location(l_ext * r_vec.x, l_ext * r_vec.y)
-                    route_bb.extend([[p1.x, p1.y, p1.z], [p2.x, p2.y, p2.z]])
-
-            # Two points don't create a polygon, nothing to check
-            if len(route_bb) < 3:
-                return None, None, None, None
-
-            return Polygon(route_bb)
-
-        if self._ignore_vehicles:
-            return (False, None, -1, None)
-
-        if not vehicle_list:
-            vehicle_list = self._world.get_actors().filter("*vehicle*")
-
-        if not max_distance:
-            max_distance = self._base_vehicle_threshold
-
-        ego_transform = self._vehicle.get_transform()
-        ego_location = ego_transform.location
-        ego_wpt = self._map.get_waypoint(ego_location)
-
-        # Get the right offset
-        if ego_wpt.lane_id < 0 and lane_offset != 0:
-            lane_offset *= -1
-
-        # Get the transform of the front of the ego
-        ego_front_transform = ego_transform
-        ego_front_transform.location += carla.Location(
-            self._vehicle.bounding_box.extent.x * ego_transform.get_forward_vector())
-
-        opposite_invasion = abs(self._offset) + self._vehicle.bounding_box.extent.y > ego_wpt.lane_width / 2
-        use_bbs = self._use_bbs_detection or opposite_invasion or ego_wpt.is_junction
-
-        # Get the route bounding box
-        route_polygon = get_route_polygon()
-
-        for target_vehicle in vehicle_list:
-            if target_vehicle.id == self._vehicle.id:
-                continue
-
-            target_transform = target_vehicle.get_transform()
-            if target_transform.location.distance(ego_location) > max_distance:
-                continue
-
-            target_wpt = self._map.get_waypoint(target_transform.location, lane_type=carla.LaneType.Any)
-
-            # General approach for junctions and vehicles invading other lanes due to the offset
-            if (use_bbs or target_wpt.is_junction) and route_polygon:
-
-                target_bb = target_vehicle.bounding_box
-                target_vertices = target_bb.get_world_vertices(target_vehicle.get_transform())
-                target_list = [[v.x, v.y, v.z] for v in target_vertices]
-                target_polygon = Polygon(target_list)
-
-                if route_polygon.intersects(target_polygon):
-                    return (True, target_vehicle, compute_distance(target_vehicle.get_location(), ego_location), target_wpt)
-
-            # Simplified approach, using only the plan waypoints (similar to TM)
-            else:
-                if target_wpt.road_id != ego_wpt.road_id or target_wpt.lane_id != ego_wpt.lane_id  + lane_offset:
-                    next_pt = self._local_planner.get_incoming_waypoint_and_direction(steps=3)[0]
-
-                    if not next_pt:
-                        continue
-
-                    if isinstance(next_pt, carla.Waypoint):
-                        next_wpt = next_pt
-                        if target_wpt.road_id != next_wpt.road_id or target_wpt.lane_id != next_wpt.lane_id  + lane_offset:
-                            continue
-                    elif isinstance(next_pt, carla.Location):
-                        next_wpt = self._map.get_waypoint(next_pt)
-                        if target_wpt.road_id != next_wpt.road_id or target_wpt.lane_id != next_wpt.lane_id  + lane_offset:
-                            continue
-
-                    if not next_wpt:
-                        continue
-                    if target_wpt.road_id != next_wpt.road_id or target_wpt.lane_id != next_wpt.lane_id  + lane_offset:
-                        continue
-
-                target_forward_vector = target_transform.get_forward_vector()
-                target_extent = target_vehicle.bounding_box.extent.x
-                target_rear_transform = target_transform
-                target_rear_transform.location -= carla.Location(
-                    x=target_extent * target_forward_vector.x,
-                    y=target_extent * target_forward_vector.y,
-                )
-                # Send in a list of waypoints to the obstacle. Or lane.id comparison to an obstacle within a certain distance.
-                # Not sure which implementation will work out.
-
-                if is_within_distance(target_rear_transform, ego_front_transform, max_distance, [low_angle_th, up_angle_th]):
-                    return (True, target_vehicle, compute_distance(target_transform.location, ego_transform.location), target_wpt)
-
-        return (False, None, -1, None)
 
     def _generate_lane_change_path(self, waypoint, direction='left', distance_same_lane=10,
                                 distance_other_lane=25, lane_change_distance=25,
