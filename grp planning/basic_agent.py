@@ -162,7 +162,7 @@ class BasicAgent(object):
 
         def _spawn_obstacle_sensor(x, y, yaw, distance_m):
             blueprint.set_attribute('distance', str(distance_m))
-            blueprint.set_attribute('hit_radius', '1')
+            blueprint.set_attribute('hit_radius', '1.5')
             blueprint.set_attribute('only_dynamics', 'False')
             blueprint.set_attribute('debug_linetrace', 'True')
             blueprint.set_attribute('sensor_tick', '0.0')
@@ -173,9 +173,9 @@ class BasicAgent(object):
             return self._world.spawn_actor(blueprint, transform, attach_to=self._vehicle)
 
         self._front_obstacle_sensor = _spawn_obstacle_sensor(bb_extent.x, 0.0, 0.0, 20.0)
-        self._rear_obstacle_sensor = _spawn_obstacle_sensor(-bb_extent.x, 0.0, 180.0, 4.0)
-        self._left_obstacle_sensor = _spawn_obstacle_sensor(0.0, -bb_extent.y, -90.0, 4.0)
-        self._right_obstacle_sensor = _spawn_obstacle_sensor(0.0, bb_extent.y, 90.0, 4.0)
+        self._rear_obstacle_sensor = _spawn_obstacle_sensor(-bb_extent.x, 0.0, 180.0, 6.0)
+        self._left_obstacle_sensor = _spawn_obstacle_sensor(0.0, -bb_extent.y, -90.0, 6.0)
+        self._right_obstacle_sensor = _spawn_obstacle_sensor(0.0, bb_extent.y, 90.0, 6.0)
         self._front_left_obstacle_sensor = _spawn_obstacle_sensor(bb_extent.x, -bb_extent.y, -45.0, 8.0)
         self._front_right_obstacle_sensor = _spawn_obstacle_sensor(bb_extent.x, bb_extent.y, 45.0, 8.0)
         self._rear_left_obstacle_sensor = _spawn_obstacle_sensor(-bb_extent.x, -bb_extent.y, -135.0, 8.0)
@@ -328,6 +328,7 @@ class BasicAgent(object):
 
             start_waypoint = self._map.get_waypoint(start_location)
             print("basic_agent start location: " , start_location)
+            print("basic_agent end location: " , end_location)
             end_waypoint = self._map.get_waypoint(end_location)
             self._destination = end_location
 
@@ -407,9 +408,9 @@ class BasicAgent(object):
                 # Regular end for regular curves
                 x_2, y_2 = route_trace[i + 1][0][0].transform.location.x, route_trace[i + 1][0][0].transform.location.y   
 
-                print("p0: ", p0, "p1: ", p1, "p2: ", p2, "p3: ", p3)     
+                # print("p0: ", p0, "p1: ", p1, "p2: ", p2, "p3: ", p3)     
 
-                print("bezier curves: ", p0, p2, p1)    
+                # print("bezier curves: ", p0, p2, p1)    
                 #right_vec = current_node.waypoint.transform.get_right_vector()
                 #cp_up    = p0 + np.array([0.0, 0.0, 3.0])              
                 #cp_right = p0 + np.array([right_vec.x, right_vec.y, right_vec.z]) * 3.0
@@ -420,7 +421,7 @@ class BasicAgent(object):
                     pt = cubic_bz(p0, p1, p2, p3, t)
                     #print("1")
                     curve = bz_curvature(p0, p1, p2, p3, t)
-                    print(f"t={t:.3}, curvature={curve:.6f}")
+                    # print(f"t={t:.3}, curvature={curve:.6f}")
                     loc = vec_to_loc(pt)
                     rot = (route_trace[i + 1][0][0]).transform.rotation 
                     #wpt = map.get_waypoint(loc, project_to_road=True, lane_type=carla.LaneType.Driving)
@@ -474,12 +475,12 @@ class BasicAgent(object):
                     print("YES bz")
                     route_trace[i] = route_trace[i] + alternate_lane_path
 
-                print("Lane_path: ")
+                # print("Lane_path: ")
                 
                 if lane_path:
                     for pt in lane_path:
                         waypt, road_opt = pt
-                        print(waypt, road_opt)
+                        # print(waypt, road_opt)
                     
         final_route = []
 
@@ -651,13 +652,34 @@ class BasicAgent(object):
                 if ego_location.distance(plan_wp_location) > min_vehicle_distance:
                     continue
 
-                if obs_mesh.contains_waypoint(plan_wp):
-                    hazard_obstacle = True
-                    blocking_candidates.append(actor)
+                if obs_mesh.contains_waypoint(plan_wp, radius_m=0.2):
+                    obstacle_velocity = obs_data.get('velocity')
+                    if obstacle_velocity is None:
+                        obstacle_velocity = actor.get_velocity()
+
+                    obstacle_speed = obstacle_velocity.length() if obstacle_velocity is not None else 0.0
+
+                    if obstacle_speed < 100.0:
+                        hazard_obstacle = True
+                        blocking_candidates.append(actor.id)
                     break
 
-            if hazard_obstacle:
-                break
+        # Deduplicate while preserving detection order.
+        blocking_candidates = list(dict.fromkeys(blocking_candidates))
+
+        # if blocking_candidates:
+        #     print("Blocking candidates detected: ")
+        #     for candidate in blocking_candidates:
+        #         candidate_loc = self.get_detected_agent_attribute(candidate, 'location')
+        #         if candidate_loc is None:
+        #             candidate_actor = self._world.get_actor(candidate)
+        #             candidate_loc = candidate_actor.get_location() if candidate_actor else None
+        #         if candidate_loc is None:
+        #             continue
+        #         print(candidate_loc)
+        #         self._world.debug.draw_string(candidate_loc, 'Blocking Candidate', draw_shadow=False,
+        #             color=carla.Color(r=255, g=0, b=0), life_time=15.0,
+        #             persistent_lines=True)
 
         # Check if the vehicle is affected by a red traffic light
         max_tlight_distance = self._base_tlight_threshold + self._speed_ratio * vehicle_speed
@@ -671,21 +693,36 @@ class BasicAgent(object):
             control = self.add_emergency_stop(control)
         elif hazard_obstacle:
 
-            obstacle_loc = self.get_detected_agent_attribute(
-                blocking_candidates[0].id,
-                'location',
-                default=blocking_candidates[0].get_location()
-            )
+            obstacle_adjacent_lane_blocked = False
+            for candidate_id in blocking_candidates:
+                obstacle_loc = self.get_detected_agent_attribute(
+                    candidate_id,
+                    'location',
+                    default=None
+                )
 
-            obstacle_wpt = self._map.get_waypoint(obstacle_loc, lane_type=carla.LaneType.Any)
+                if obstacle_loc is None:
+                    obstacle_actor = self._world.get_actor(candidate_id)
+                    if obstacle_actor:
+                        obstacle_loc = obstacle_actor.get_location()
 
-            adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(obstacle_wpt)
+                if obstacle_loc is None:
+                    continue
 
-            if adjacent_lane_blocked:
-                print("adjacent lane blocked: ", obstacle_wpt)
-            
+                obstacle_wpt = self._map.get_waypoint(obstacle_loc, lane_type=carla.LaneType.Any)
+                if self._adjacent_lane_waypoints_blocked(obstacle_wpt):
+                    obstacle_adjacent_lane_blocked = True
+                    break
+
+            # if obstacle_adjacent_lane_blocked:
+            #     print("adjacent lane blocked: ", obstacle_wpt)
+
+            agent_adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(self._map.get_waypoint(self._vehicle.get_location()))
+
+            current_blocking_ids = set(blocking_candidates)
+
             # if obstacle_wpt and (adjacent_lane_blocked or (left_blocked and right_blocked)):
-            if blocking_candidates and adjacent_lane_blocked:
+            if blocking_candidates and obstacle_adjacent_lane_blocked:
                 print("Adjacent lane waypoint(s) blocked near obstacle. Emergency stopping.")
                 control = self.add_emergency_stop(control)
 
@@ -693,25 +730,41 @@ class BasicAgent(object):
             # just if it is the same vehicles that have been detected before, 
             # then we can assume that they are not moving and thus we should stop.
             # Though later we should take these agents movement into consideration
-            elif blocking_candidates and (self._previous_obstacle is None or set(blocking_candidates) != self._previous_obstacle):
+            elif blocking_candidates and (self._previous_obstacle is None or current_blocking_ids != self._previous_obstacle):
                 print("Entered obstacle resolution")
                 print("Replanning around obstacle: ", end="")
                 for candidate in blocking_candidates:
-                    candidate_loc = self.get_detected_agent_attribute(candidate.id, 'location', default=candidate.get_location())
+                    candidate_loc = self.get_detected_agent_attribute(candidate, 'location')
+                    if candidate_loc is None:
+                        candidate_actor = self._world.get_actor(candidate)
+                        candidate_loc = candidate_actor.get_location() if candidate_actor else None
                     print(candidate_loc, end="; ")
                 print()
 
-                self._previous_obstacle = set(blocking_candidates)
+                self._previous_obstacle = current_blocking_ids
                 self.set_destination(self._destination, None)
 
                 for candidate in blocking_candidates:
-                    candidate_loc = self.get_detected_agent_attribute(candidate.id, 'location', default=candidate.get_location())
+                    candidate_loc = self.get_detected_agent_attribute(candidate, 'location')
+                    if candidate_loc is None:
+                        candidate_actor = self._world.get_actor(candidate)
+                        candidate_loc = candidate_actor.get_location() if candidate_actor else None
+                    if candidate_loc is None:
+                        continue
                     self._world.debug.draw_string(candidate_loc, 'Obstacle', draw_shadow=False,
                     color=carla.Color(r=255, g=0, b=0), life_time=15.0,
                     persistent_lines=True)
 
+            elif blocking_candidates:
+                # Hazard is still present but neither a new replan set nor an adjacent-lane
+                # blocked condition fired this tick. Keep braking to avoid rolling forward
+                # through a transient geometry/condition flip.
+                control = self.add_emergency_stop(control)
+
         self._prev_obs = hazard_obstacle
         self._prev_lane = self._map.get_waypoint(self._vehicle.get_location()).lane_id
+
+        # print(control)
 
         return control
     
@@ -957,19 +1010,44 @@ class BasicAgent(object):
         """Return True if left/right adjacent lane waypoint near obstacle is occupied by a seen obstacle mesh."""
         if not obstacle_wpt:
             return False
+        
+        print("Checking adjacent lanes for obstacle waypoint: ", obstacle_wpt)
 
         left_wp = obstacle_wpt.get_left_lane()
         right_wp = obstacle_wpt.get_right_lane()
         obs_data = self._get_seen_obstacles_snapshot()
 
+        print("Left WP: ", left_wp, "Right WP: ", right_wp)
+
+        obstacle_fwd = obstacle_wpt.transform.get_forward_vector()
+
+        def is_direction_compatible(candidate_wp):
+            if candidate_wp is None:
+                return False
+            if candidate_wp.lane_type != carla.LaneType.Driving:
+                return False
+            if candidate_wp.road_id != obstacle_wpt.road_id:
+                return False
+            # CARLA lane_id sign encodes direction; opposite sign means opposing flow.
+            if obstacle_wpt.lane_id * candidate_wp.lane_id <= 0:
+                return False
+
+            cand_fwd = candidate_wp.transform.get_forward_vector()
+            dot = (
+                obstacle_fwd.x * cand_fwd.x +
+                obstacle_fwd.y * cand_fwd.y +
+                obstacle_fwd.z * cand_fwd.z
+            )
+            return dot > 0.0
+
         def waypoint_blocked_by_seen_obstacle(candidate_wp):
-            if candidate_wp is None or candidate_wp.lane_type != carla.LaneType.Driving:
+            if not is_direction_compatible(candidate_wp):
                 return True
 
             candidate_loc = candidate_wp.transform.location
             for obs in obs_data:
                 obs_mesh = obs['mesh']
-                if obs_mesh.contains_waypoint(candidate_loc):
+                if obs_mesh.contains_waypoint(candidate_loc, radius_m=0.5):
                     return True
             return False
 

@@ -46,7 +46,12 @@ class car_mesh:
 
 		inside = False
 		x, y = point.x, point.y
-		vertices = self.corners
+
+		# Ensure corners are consistently ordered around centroid before polygon tests.
+		# Using unsorted bbox vertices can create self-intersecting polygons and false negatives.
+		cx = sum(v.x for v in self.corners) / len(self.corners)
+		cy = sum(v.y for v in self.corners) / len(self.corners)
+		vertices = sorted(self.corners, key=lambda v: math.atan2(v.y - cy, v.x - cx))
 		j = len(vertices) - 1
 
 		for i in range(len(vertices)):
