@@ -208,6 +208,7 @@ def build_dlite_inputs(
     start_waypoint: Optional[carla.Waypoint] = None,
     goal_waypoint: Optional[carla.Waypoint] = None,
 ) -> GeneratedMapData:
+    """Build the full generated waypoint dictionary D* Lite needs at runtime."""
     waypoint_graph, waypoint_lookup, spatial_index = build_waypoint_graph(carla_map, resolution)
     normalized_resolution = normalize_resolution(resolution)
 
@@ -238,6 +239,21 @@ def build_dlite_inputs(
     )
 
 
+def gen_map_initial(
+    carla_map,
+    resolution: float = DEFAULT_RESOLUTION,
+    start_waypoint: Optional[carla.Waypoint] = None,
+    goal_waypoint: Optional[carla.Waypoint] = None,
+) -> GeneratedMapData:
+    """Initial GenMap pass: generate every waypoint and cache pred/succ IDs."""
+    return build_dlite_inputs(
+        carla_map,
+        resolution=resolution,
+        start_waypoint=start_waypoint,
+        goal_waypoint=goal_waypoint,
+    )
+
+
 def connect_and_build_dlite_inputs(
     host: str = "127.0.0.1",
     port: int = 2000,
@@ -253,7 +269,7 @@ def connect_and_build_dlite_inputs(
     start_waypoint = carla_map.get_waypoint(start_location) if start_location is not None else None
     goal_waypoint = carla_map.get_waypoint(goal_location) if goal_location is not None else None
 
-    return build_dlite_inputs(
+    return gen_map_initial(
         carla_map,
         resolution=resolution,
         start_waypoint=start_waypoint,
@@ -319,3 +335,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+#Run Geneneratemap and D* Lite on different threads
+#Integrate Generatemap with D* Lite

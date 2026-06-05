@@ -1,5 +1,6 @@
 import carla
 import json
+import math
 import random
 import time
 
@@ -11,15 +12,60 @@ from pathlib import Path
 # print(sys.getrecursionlimit())
 sys.setrecursionlimit(50000)
 
-sys.path.append(os.path.join(os.path.dirname(__file__), 'grp planning'))
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(PROJECT_ROOT / 'grp planning'))
+sys.path.append(str(PROJECT_ROOT))
 
 # Now import from global_route_planning.py
 from global_route_planner import _localize
-from Generate_map import build_dlite_inputs
+from Generate_map import gen_map_initial, save_waypoint_graph
 
 import threading
 from copy import deepcopy
+
+
+class PerceptionState:
+    """Thread-safe state shared by perception, D* Lite, and vehicle execution."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self.seen_obstacles = {}
+        self.obstacle_blocking = False
+        self.path_updated = False
+        self.path = {}
+
+    def mark_obstacle(self, waypoint):
+        with self._lock:
+            self.seen_obstacles[waypoint.id] = waypoint
+            self.obstacle_blocking = True
+
+    def clear_obstacle_blocking(self):
+        with self._lock:
+            self.obstacle_blocking = False
+
+    def set_path(self, route_waypoints):
+        with self._lock:
+            self.path = {
+                index: waypoint.id
+                for index, waypoint in enumerate(route_waypoints or [])
+                if waypoint is not None
+            }
+            self.path_updated = True
+
+    def consume_path_update(self):
+        with self._lock:
+            was_updated = self.path_updated
+            self.path_updated = False
+            return was_updated, dict(self.path)
+
+    def snapshot(self):
+        with self._lock:
+            return {
+                "seen_obstacles": sorted(self.seen_obstacles.keys()),
+                "obstacle_blocking": self.obstacle_blocking,
+                "path_updated": self.path_updated,
+                "path": dict(self.path),
+            }
 
 class DStarLite:
     def __init__(
@@ -32,6 +78,7 @@ class DStarLite:
         vehicle,
         waypoint_graph=None,
         waypoint_lookup=None,
+        debug_draw_costs=False,
     ):
         self.world = world
         self.map = world.get_map()
@@ -48,6 +95,7 @@ class DStarLite:
         self.part1 = []
         self.resolution = 1.0
         self.vehicle = vehicle
+        self.debug_draw_costs = debug_draw_costs
         # self.og_rhs = {}
         # self.crnt_rhs = {}
         self.all_obst_wps = {} # dict of all obstacle waypoints ever encountered
@@ -62,6 +110,71 @@ class DStarLite:
         self.obstacle_events = []
         self.waypoint_graph = waypoint_graph or {}
         self.waypoint_lookup = waypoint_lookup or {waypoint.id: waypoint for waypoint in all_waypoints}
+        self.perception_state = PerceptionState()
+        self._waypoint_spatial_index = self._build_waypoint_spatial_index()
+
+    def _location_key(self, location, bucket_size=None):
+        bucket_size = bucket_size or self.resolution
+        return (
+            math.floor(location.x / bucket_size),
+            math.floor(location.y / bucket_size),
+            math.floor(location.z / bucket_size),
+        )
+
+    def _build_waypoint_spatial_index(self):
+        spatial_index = {}
+        for waypoint in self.waypoint_lookup.values():
+            location_key = self._location_key(waypoint.transform.location)
+            spatial_index.setdefault(location_key, []).append(waypoint)
+        return spatial_index
+
+    def _closest_generated_waypoint(self, target_waypoint):
+        if target_waypoint is None:
+            return None
+        if target_waypoint.id in self.waypoint_lookup:
+            return self.waypoint_lookup[target_waypoint.id]
+
+        target_location = target_waypoint.transform.location
+        base_key = self._location_key(target_location)
+        closest_waypoint = None
+        closest_distance = float("inf")
+
+        for search_radius in range(3):
+            for dx in range(-search_radius, search_radius + 1):
+                for dy in range(-search_radius, search_radius + 1):
+                    for dz in range(-search_radius, search_radius + 1):
+                        candidate_key = (base_key[0] + dx, base_key[1] + dy, base_key[2] + dz)
+                        for candidate in self._waypoint_spatial_index.get(candidate_key, []):
+                            candidate_distance = target_location.distance(candidate.transform.location)
+                            if candidate_distance < closest_distance:
+                                closest_waypoint = candidate
+                                closest_distance = candidate_distance
+            if closest_waypoint is not None:
+                return closest_waypoint
+
+        for candidate in self.waypoint_lookup.values():
+            candidate_distance = target_location.distance(candidate.transform.location)
+            if candidate_distance < closest_distance:
+                closest_waypoint = candidate
+                closest_distance = candidate_distance
+
+        return closest_waypoint
+
+    def _graph_neighbors(self, waypoint, direction):
+        resolved_waypoint = self._closest_generated_waypoint(waypoint)
+        if resolved_waypoint is None:
+            return []
+
+        graph_entry = self.waypoint_graph.get(resolved_waypoint.id)
+        if graph_entry is None:
+            return []
+
+        neighbors = []
+        for neighbor_id in graph_entry.get(direction, []):
+            neighbor = self.waypoint_lookup.get(neighbor_id)
+            if neighbor is not None:
+                neighbors.append(neighbor)
+        return neighbors
 
     def _waypoint_ids(self, waypoints, unique=False):
         waypoint_ids = []
@@ -123,6 +236,7 @@ class DStarLite:
         }
         if store:
             self.policy_routes.append(route_record)
+        self.perception_state.set_path(route)
         return route_record
 
     def export_visualization_data(self, output_path="dlite_route.json", route=None):
@@ -142,6 +256,7 @@ class DStarLite:
             "explored": self._waypoint_ids(self.path, unique=True),
             "obstacles": sorted(self.all_obst_wps.keys()),
             "obstacle_events": self.obstacle_events,
+            "perception": self.perception_state.snapshot(),
         }
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,82 +267,26 @@ class DStarLite:
         return output_path
         
     def successors(self,waypoint):
-        neighbors = []
-        forward = waypoint.next(self.resolution)
-
-        if forward:
-            neighbors.extend(forward)
-
-        if waypoint.lane_change & carla.LaneChange.Left:
-            left_lane = waypoint.get_left_lane()
-            if left_lane and left_lane.lane_type == carla.LaneType.Driving:
-                neighbors.append(left_lane)
-                neighbors.append(left_lane.next(self.resolution)[0])
-
-        if waypoint.lane_change & carla.LaneChange.Right:
-            right_lane = waypoint.get_right_lane()
-            if right_lane and right_lane.lane_type == carla.LaneType.Driving:
-                neighbors.append(right_lane)
-                neighbors.append(right_lane.next(self.resolution)[0])
-
-        
-        for i in range(len(neighbors)):
-            initial_dist = neighbors[i].transform.location.distance(waypoint.transform.location)
-            x = neighbors[i]
-            for z in self.part1+[self.goal]:
-                if neighbors[i].transform.location.distance(z.transform.location) < initial_dist:
-                    x = z
-                    initial_dist=neighbors[i].transform.location.distance(z.transform.location)
-            neighbors[i] = x
-        if waypoint.transform.location.distance(self.goal.transform.location) < self.resolution+.5:
+        neighbors = self._graph_neighbors(waypoint, "successors")
+        if waypoint.transform.location.distance(self.goal.transform.location) < self.resolution + .5:
             neighbors.append(self.goal)
         return neighbors
     
     def predecessors(self, waypoint):
-        neighbors = []
-        Backward = waypoint.previous(self.resolution)
-        if Backward:
-            neighbors.extend(Backward)
-        
-        if waypoint.lane_change & carla.LaneChange.Left:
-            left_lane = waypoint.get_left_lane()
-            if left_lane and left_lane.lane_type == carla.LaneType.Driving:
-                neighbors.append(left_lane)
-                neighbors.append(left_lane.previous(self.resolution)[0])
-
-        if waypoint.lane_change & carla.LaneChange.Right:
-            right_lane = waypoint.get_right_lane()
-            if right_lane and right_lane.lane_type == carla.LaneType.Driving:
-                neighbors.append(right_lane)
-                neighbors.append(right_lane.previous(self.resolution)[0])
-
-        test = self._localize(waypoint.transform.location)
-        self.world.debug.draw_string(test.transform.location, 'SSSSSSSSSS', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
-        x = [0]*len(neighbors)
-        for i in range(len(neighbors)):
-            initial_dist = neighbors[i].transform.location.distance(waypoint.transform.location)
-            for z in self.all_waypoints:
-                if neighbors[i].transform.location.distance(z.transform.location) < initial_dist:# and (waypoint.road_id == z.road_id or waypoint.lane_id == z.lane_id):
-                    x[i] = z
-                    initial_dist=neighbors[i].transform.location.distance(z.transform.location)
-
-        for i in range(len(neighbors)):
-            if x[i] != 0:
-                neighbors[i] = x[i]
-        self.part1.extend(neighbors)
-        if waypoint.transform.location.distance(self.start.transform.location) < self.resolution+0.5:
+        neighbors = self._graph_neighbors(waypoint, "predecessors")
+        if waypoint.transform.location.distance(self.start.transform.location) < self.resolution + 0.5:
             neighbors.append(self.start)
         return neighbors
     
     def add_obst_loc_to_obst_wp(self, location):
         wp = self.map.get_waypoint(location)
-        shortest_dist=9999999
-        for z in self.all_waypoints:
-            if wp.transform.location.distance(z.transform.location) < shortest_dist:
-                gen_wp = z
-                shortest_dist=wp.transform.location.distance(z.transform.location)
+        gen_wp = self._closest_generated_waypoint(wp)
+        if gen_wp is None:
+            return None
         self.all_obst_wps[gen_wp.id] = gen_wp
         self.new_obst_wps[gen_wp.id] = gen_wp
+        self.perception_state.mark_obstacle(gen_wp)
+        return gen_wp
 
     
     def heuristic(self, waypoint1, waypoint2):
@@ -344,7 +403,10 @@ class DStarLite:
         self.s_current = self.start
         path = [self.s_current]
         self.actual_route = path
+        self.perception_state.set_path(path)
         flag=0
+        demo_obstacle_indices = [2812, 2816, 2820, 2824]
+        has_demo_obstacles = len(self.all_waypoints) > max(demo_obstacle_indices)
         self.compute_shortest_path()
         self.record_policy_route("initial", start_waypoint=self.s_current, obstacles=[])
         
@@ -371,25 +433,23 @@ class DStarLite:
             self.s_current = arg_min
             path.append(self.s_current)
             self.actual_route = path
+            self.perception_state.set_path(path)
             self.vehicle.set_transform(self.s_current.transform)
 
-            if self.s_current.transform.location.distance(self.all_waypoints[2824].transform.location)<25 and flag==0:
+            if has_demo_obstacles and self.s_current.transform.location.distance(self.all_waypoints[2824].transform.location)<25 and flag==0:
                 flag=1
-                self.obs_signal(self.all_waypoints[2812].transform.location)
-                self.obs_signal(self.all_waypoints[2816].transform.location)
-                self.obs_signal(self.all_waypoints[2820].transform.location)
-                self.obs_signal(self.all_waypoints[2824].transform.location)
+                for obstacle_index in demo_obstacle_indices:
+                    self.obs_signal(self.all_waypoints[obstacle_index].transform.location)
 
-                l=self.all_obst_wps.values()
                 print("\n\n\nadded obstacle")
 
-            if self.s_current.transform.location.distance(self.all_waypoints[2824].transform.location)<15 and flag==1:
+            if has_demo_obstacles and self.debug_draw_costs and self.s_current.transform.location.distance(self.all_waypoints[2824].transform.location)<15 and flag==1:
                 flag=2
                 for i in self.all_waypoints:
                     self.world.debug.draw_string(i.transform.location, f'{self.g[i.id]}', draw_shadow=False, color=carla.Color(r=0, g=220, b=220), life_time=20.0, persistent_lines=True)
 
             time.sleep(.01)
-            if self.s_current.transform.location.distance(self.all_waypoints[2824].transform.location)<5:
+            if has_demo_obstacles and self.s_current.transform.location.distance(self.all_waypoints[2824].transform.location)<5:
                 self.world.debug.draw_string(self.s_current.transform.location, f'{self.rhs[self.s_current.id]}', draw_shadow=False, color=carla.Color(r=220, g=200, b=200), life_time=30.0, persistent_lines=True)
                 time.sleep(2)
 
@@ -433,6 +493,7 @@ class DStarLite:
                         self.update_vertex(u)
                 self.new_obst_wps = {}
                 self.compute_shortest_path()
+                self.perception_state.clear_obstacle_blocking()
                 reroute_record = self.record_policy_route(
                     f"reroute {len(self.reroute_events) + 1}",
                     start_waypoint=self.s_current,
@@ -480,6 +541,7 @@ class ThreadedDStarLite:
             self._build_waypoint_index()  # populate initial snapshot
 
         self._stop_event.clear()
+        self._needs_replan.set()
         self._planner_thread = threading.Thread(target=self._planner_loop, name="DStarPlannerThread", daemon=True)
         self._planner_thread.start()
 
@@ -491,8 +553,9 @@ class ThreadedDStarLite:
     def signal_obstacle(self, location):
         with self._lock:
             try:
-                self._dstar.add_obst_loc_to_obst_wp(location)
-                self._needs_replan.set()
+                obstacle_waypoint = self._dstar.add_obst_loc_to_obst_wp(location)
+                if obstacle_waypoint is not None:
+                    self._needs_replan.set()
             except Exception as e:
                 print("[ThreadedDStarLite] signal_obstacle() error:", e)
 
@@ -538,11 +601,35 @@ class ThreadedDStarLite:
         while not self._stop_event.is_set():
             if not self._needs_replan.is_set():
                 time.sleep(self.replan_interval)
-            if self._needs_replan.is_set() or True:
+                continue
+            if self._needs_replan.is_set():
                 self._needs_replan.clear()
                 self._planner_idle.clear()
                 try:
                     self._dstar.compute_shortest_path()
+                    trigger_obstacles = sorted(self._dstar.new_obst_wps.keys())
+                    if trigger_obstacles:
+                        self._dstar.obstacle_events.append(
+                            {
+                                "step": len(self._dstar.actual_route),
+                                "current": self._dstar.s_current.id if self._dstar.s_current else None,
+                                "obstacles": trigger_obstacles,
+                            }
+                        )
+                        route_record = self._dstar.record_policy_route(
+                            f"threaded reroute {len(self._dstar.reroute_events) + 1}",
+                            start_waypoint=self._dstar.s_current,
+                            obstacles=trigger_obstacles,
+                            store=False,
+                        )
+                        route_record["current"] = self._dstar.s_current.id if self._dstar.s_current else None
+                        route_record["trigger_obstacles"] = trigger_obstacles
+                        self._dstar.reroute_events.append(route_record)
+                    elif not self._dstar.policy_routes:
+                        self._dstar.record_policy_route("threaded initial", start_waypoint=self._dstar.s_current)
+                    self._dstar.new_obst_wps = {}
+                    self._dstar.new_obst = 0
+                    self._dstar.perception_state.clear_obstacle_blocking()
                 except Exception as e:
                     print("[ThreadedDStarLite] compute_shortest_path() error:", e)
                 with self._lock:
@@ -594,68 +681,120 @@ class ThreadedDStarLite:
             items = sorted(self._waypoint_index.items(), key=lambda kv: kv[1].get('g', float('inf')))
             return items[:k]
 
-# Connect to the CARLA server
-client = carla.Client('localhost', 2000)
-client.set_timeout(10.0)
 
-# Get the world and map
-world = client.get_world()
-carla_map = world.get_map()
+class PlanningCoordinator:
+    """Owns Basic Agent, D* Lite, and perception-style shared state.
 
-# Spawn a firetruck at a random location (point A)
-blueprint_library = world.get_blueprint_library()
-# firetruck_bp = blueprint_library.filter('vehicle.carlamotors.firetruck')[0]
-firetruck_bp = blueprint_library.filter('vehicle.harley-davidson.low_rider')[0]
+    The image notes call for a superior class that initializes both runtime
+    pieces and protects shared variables with mutexes. This class provides that
+    handoff point without forcing the Basic Agent implementation to live here.
+    """
 
-spawn_points = carla_map.get_spawn_points()
+    def __init__(self, dstar_lite, basic_agent=None, replan_interval=0.2):
+        self.dstar_lite = dstar_lite
+        self.basic_agent = basic_agent
+        self.shared_state = dstar_lite.perception_state
+        self.threaded_dstar = ThreadedDStarLite(
+            dstar_lite,
+            replan_interval=replan_interval,
+        )
+        self._basic_agent_thread = None
+        self._stop_event = threading.Event()
 
-point_a = spawn_points[50]
-print("point_a:", point_a)
-firetruck = world.spawn_actor(firetruck_bp, point_a)
-point_b = spawn_points[5]
+    def start(self, run_basic_agent=None):
+        self._stop_event.clear()
+        self.threaded_dstar.start()
+        if run_basic_agent is not None:
+            self._basic_agent_thread = threading.Thread(
+                target=run_basic_agent,
+                name="BasicAgentThread",
+                daemon=True,
+            )
+            self._basic_agent_thread.start()
 
-start_waypoint = carla_map.get_waypoint(point_a.location)
-end_waypoint = carla_map.get_waypoint(point_b.location)
-world.debug.draw_string(start_waypoint.transform.location, 'START', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
-world.debug.draw_string(end_waypoint.transform.location, 'END', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
-print("Firetruck starting at", point_a.location)
-print(f"Destination: {point_b.location}")
+    def stop(self):
+        self._stop_event.set()
+        self.threaded_dstar.stop()
+        if self._basic_agent_thread:
+            self._basic_agent_thread.join(timeout=1.0)
 
-map_data = build_dlite_inputs(
-    carla_map,
-    start_waypoint=start_waypoint,
-    goal_waypoint=end_waypoint,
-)
+    def report_obstacle(self, location):
+        self.threaded_dstar.signal_obstacle(location)
 
-all_waypoints = map_data.all_waypoints
-wp_pts = map_data.wp_pts
-get_start = map_data.start_waypoint
-get_end = map_data.goal_waypoint
+    def get_path_update(self):
+        return self.shared_state.consume_path_update()
 
-print(f'gen_points {all_waypoints[0]}')
-print(f'all_waypoints {all_waypoints[0]}')
-# world.debug.draw_string(all_waypoints[0].transform.location, '^', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
-print(f'get_start {get_start}')
-print(f'get_end {get_end}')
-world.debug.draw_string(get_start.transform.location, 'S', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
-world.debug.draw_string(get_end.transform.location, 'E', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
-print('============================================================')
-try:
-    dstar_lite = DStarLite(
-        world,
-        get_start,
-        get_end,
-        all_waypoints,
-        wp_pts,
-        firetruck,
-        waypoint_graph=map_data.waypoint_graph,
-        waypoint_lookup=map_data.waypoint_lookup,
+    def get_shared_state_snapshot(self):
+        return self.shared_state.snapshot()
+
+def main():
+    # Connect to the CARLA server
+    client = carla.Client('localhost', 2000)
+    client.set_timeout(10.0)
+
+    # Get the world and map
+    world = client.get_world()
+    carla_map = world.get_map()
+
+    # Spawn a firetruck at a random location (point A)
+    blueprint_library = world.get_blueprint_library()
+    # firetruck_bp = blueprint_library.filter('vehicle.carlamotors.firetruck')[0]
+    firetruck_bp = blueprint_library.filter('vehicle.harley-davidson.low_rider')[0]
+
+    spawn_points = carla_map.get_spawn_points()
+
+    point_a = spawn_points[50]
+    print("point_a:", point_a)
+    firetruck = world.spawn_actor(firetruck_bp, point_a)
+    point_b = spawn_points[5]
+
+    start_waypoint = carla_map.get_waypoint(point_a.location)
+    end_waypoint = carla_map.get_waypoint(point_b.location)
+    world.debug.draw_string(start_waypoint.transform.location, 'START', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
+    world.debug.draw_string(end_waypoint.transform.location, 'END', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
+    print("Firetruck starting at", point_a.location)
+    print(f"Destination: {point_b.location}")
+
+    map_data = gen_map_initial(
+        carla_map,
+        start_waypoint=start_waypoint,
+        goal_waypoint=end_waypoint,
     )
-    dstar_lite.initialize()
-    route = dstar_lite.main()
-    dstar_lite.export_visualization_data(route=route)
+    save_waypoint_graph(map_data.waypoint_graph, "map_cache.txt")
 
-finally:
-     # Clean up
-    firetruck.destroy()
-    print('Firetruck destroyed successfully')
+    all_waypoints = map_data.all_waypoints
+    wp_pts = map_data.wp_pts
+    get_start = map_data.start_waypoint
+    get_end = map_data.goal_waypoint
+
+    print(f'gen_points {all_waypoints[0]}')
+    print(f'all_waypoints {all_waypoints[0]}')
+    # world.debug.draw_string(all_waypoints[0].transform.location, '^', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
+    print(f'get_start {get_start}')
+    print(f'get_end {get_end}')
+    world.debug.draw_string(get_start.transform.location, 'S', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
+    world.debug.draw_string(get_end.transform.location, 'E', draw_shadow=False, color=carla.Color(r=220, g=0, b=0), life_time=60.0, persistent_lines=True)
+    print('============================================================')
+    try:
+        dstar_lite = DStarLite(
+            world,
+            get_start,
+            get_end,
+            all_waypoints,
+            wp_pts,
+            firetruck,
+            waypoint_graph=map_data.waypoint_graph,
+            waypoint_lookup=map_data.waypoint_lookup,
+        )
+        dstar_lite.initialize()
+        route = dstar_lite.main()
+        dstar_lite.export_visualization_data(route=route)
+
+    finally:
+         # Clean up
+        firetruck.destroy()
+        print('Firetruck destroyed successfully')
+
+
+if __name__ == "__main__":
+    main()
