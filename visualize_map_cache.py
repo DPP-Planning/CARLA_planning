@@ -4,8 +4,147 @@ import heapq
 import json
 import math
 import os
-from pathlib import Path
 
+from pathlib import Path
+from collections import deque
+
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+
+def animate_agent(ax, graph, path):
+
+    # Extract coordinates
+    coords = [graph[n]["location"] for n in path]
+    xs = [c[0] for c in coords]
+    ys = [c[1] for c in coords]
+
+    # Agent marker (DO NOT recreate fig)
+    agent_dot, = ax.plot([], [], 'ro', markersize=10, zorder=10)
+
+    # Interpolate for smooth motion
+    interp_x, interp_y = [], []
+    for i in range(len(xs) - 1):
+        interp_x.extend(np.linspace(xs[i], xs[i+1], 20))
+        interp_y.extend(np.linspace(ys[i], ys[i+1], 20))
+
+    def update(frame):
+        agent_dot.set_data(
+            [interp_x[frame]],
+            [interp_y[frame]]
+        )
+        return agent_dot,
+
+    anim = FuncAnimation(
+        ax.figure,   # 👈 IMPORTANT: use existing figure
+        update,
+        frames=len(interp_x),
+        interval=100,
+        blit=True,
+        repeat=False
+    )
+
+    return anim
+
+# =========================
+# NEW: Modular Plot Helpers
+# =========================
+
+def plot_waypoints(ax, waypoints):
+    xs = [wp.transform.location.x for wp in waypoints]
+    ys = [wp.transform.location.y for wp in waypoints]
+    ax.scatter(xs, ys, c='lightgray', s=5, alpha=0.6, label="Waypoints")
+
+
+def plot_topology(ax, topology):
+    for wp1, wp2 in topology:
+        x1 = wp1.transform.location.x
+        y1 = wp1.transform.location.y
+        x2 = wp2.transform.location.x
+        y2 = wp2.transform.location.y
+
+        ax.plot(
+            [x1, x2], [y1, y2],
+            color='gray',
+            linewidth=0.5,
+            alpha=0.5
+        )
+
+
+def plot_path(ax, path):
+    xs = [wp.transform.location.x for wp, _ in path]
+    ys = [wp.transform.location.y for wp, _ in path]
+
+    ax.plot(xs, ys, color='red', linewidth=3, label='Planned Path', zorder=3)
+    plt.scatter(xs[0], ys[0], color='green', s=100, edgecolors='black', zorder=5, label='Start')
+    plt.text(xs[0], ys[0], ' START', fontsize=10, weight='bold', color='green')
+
+    # Goal point
+    plt.scatter(xs[-1], ys[-1], color='blue', s=100, edgecolors='black', zorder=5, label='Goal')
+    plt.text(xs[-1], ys[-1], ' GOAL', fontsize=10, weight='bold', color='blue')
+
+
+def plot_start_goal(ax, start, goal):
+    ax.scatter(
+        start.transform.location.x,
+        start.transform.location.y,
+        c='green', s=100, label='Start'
+    )
+
+    ax.scatter(
+        goal.transform.location.x,
+        goal.transform.location.y,
+        c='red', s=100, label='Goal'
+    )
+
+
+# =========================
+# REPLACED: Main Render
+# =========================
+
+def render(waypoints=None, topology=None, path=None, start=None, goal=None):
+    fig, ax = plt.subplots(figsize=(10, 10))
+
+    if waypoints:
+        plot_waypoints(ax, waypoints)
+
+    if topology:
+        plot_topology(ax, topology)
+
+    if path:
+        plot_path(ax, path)
+        
+
+    if start and goal:
+        plot_start_goal(ax, start, goal)
+
+    ax.set_title("Waypoint Graph Visualization")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.axis("equal")
+    ax.legend()
+
+    plt.show()
+
+# =========================
+# EXISTING ENTRY POINT (MODIFIED)
+# =========================
+
+def visualize_map_cache(waypoints, topology=None, path=None, start=None, goal=None):
+    """
+    Existing function upgraded to use new rendering system.
+    """
+
+    render(
+        waypoints=waypoints,
+        topology=topology,
+        path=path,
+        start=start,
+        goal=goal
+    )
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_MPLCONFIGDIR = PROJECT_ROOT / ".matplotlib-cache"
@@ -74,6 +213,12 @@ def parse_id_payload(path):
 
     for key in ("explored", "obstacles"):
         parsed[key] = [int(waypoint_id) for waypoint_id in payload.get(key, [])]
+    if payload.get("perception", {}).get("seen_obstacles"):
+        parsed.setdefault("obstacles", [])
+        parsed["obstacles"].extend(
+            int(waypoint_id)
+            for waypoint_id in payload["perception"].get("seen_obstacles", [])
+        )
     for key in ("start", "goal"):
         if payload.get(key) is not None:
             parsed[key] = int(payload[key])
@@ -240,479 +385,255 @@ def add_route_layer(axis, graph, route_ids, color, label, linewidth, alpha=0.9, 
     )
     axis.add_collection(route_collection)
 
-
 def draw_waypoint_marker(axis, graph, waypoint_id, color, label, marker):
-    location = graph.get(waypoint_id, {}).get("location")
-    if location is None:
+    """Draw a highlighted waypoint (start/goal) with clear visibility."""
+    if waypoint_id is None:
         return
+
+    wp = graph.nodes[waypoint_id]
+    x, y = wp["pos"]
+
     axis.scatter(
-        [location[0]],
-        [location[1]],
-        s=90,
+        x,
+        y,
         c=color,
+        s=180,  
         marker=marker,
-        edgecolors="white",
-        linewidths=1.2,
-        zorder=6,
+        edgecolors="black",
+        linewidths=0.9,
+        zorder=5,
         label=label,
     )
+
     axis.annotate(
-        f"{label}\n{waypoint_id}",
-        xy=(location[0], location[1]),
-        xytext=(8, 8),
+        f"{label}",
+        (x, y),
         textcoords="offset points",
-        fontsize=8,
-        color=color,
+        xytext=(6, 6),
+        fontsize=11,
         weight="bold",
-        zorder=7,
-    )
-
-
-def save_plot(
-    graph,
-    output_path,
-    dpi,
-    show_nodes,
-    route_ids=None,
-    explored_ids=None,
-    obstacle_ids=None,
-    planned_routes=None,
-    reroutes=None,
-    start_id=None,
-    goal_id=None,
-):
-    import matplotlib.pyplot as plt
-    from matplotlib.collections import LineCollection
-
-    locations, segments = build_line_segments(graph)
-    if not locations:
-        raise ValueError("No waypoint locations found in cache file.")
-
-    route_ids = route_ids or []
-    explored_ids = explored_ids or []
-    obstacle_ids = obstacle_ids or []
-    planned_routes = planned_routes or []
-    reroutes = reroutes or []
-    explored_segments = build_explored_segments(graph, explored_ids)
-
-    figure, axis = plt.subplots(figsize=(14, 14), dpi=dpi)
-    axis.set_aspect("equal", adjustable="box")
-    axis.set_facecolor("#f7f8fa")
-    figure.patch.set_facecolor("white")
-
-    if segments:
-        line_collection = LineCollection(
-            segments,
-            colors="#9ca3af",
-            linewidths=0.32,
-            alpha=0.34,
-            label="possible graph edges",
-        )
-        axis.add_collection(line_collection)
-
-    if explored_segments:
-        explored_collection = LineCollection(
-            explored_segments,
-            colors="#f59e0b",
-            linewidths=1.0,
-            alpha=0.55,
-            label="explored route space",
-            zorder=3,
-        )
-        axis.add_collection(explored_collection)
-
-    for route_index, route_record in enumerate(planned_routes):
-        label = route_record.get("label") or f"planned route {route_index + 1}"
-        color = "#2563eb" if route_index == 0 else "#7c3aed"
-        add_route_layer(
-            axis,
-            graph,
-            route_record.get("route", []),
-            color,
-            label,
-            linewidth=1.7,
-            alpha=0.72,
-            linestyle="dashed",
-            zorder=4,
-        )
-
-    for route_index, route_record in enumerate(reroutes):
-        label = route_record.get("label") or f"reroute {route_index + 1}"
-        add_route_layer(
-            axis,
-            graph,
-            route_record.get("route", []),
-            "#7c3aed",
-            label,
-            linewidth=2.2,
-            alpha=0.88,
-            linestyle="dashdot",
-            zorder=5,
-        )
-
-    add_route_layer(
-        axis,
-        graph,
-        route_ids,
-        "#dc2626",
-        "actual route taken",
-        linewidth=3.0,
-        alpha=0.96,
+        color=color,
         zorder=6,
     )
 
-    if show_nodes:
-        xs = [location[0] for location in locations.values()]
-        ys = [location[1] for location in locations.values()]
-        axis.scatter(xs, ys, s=1.2, c="#111827", alpha=0.25, linewidths=0, zorder=2)
 
-    if route_ids:
-        route_locations = [graph[waypoint_id]["location"] for waypoint_id in route_ids if waypoint_id in graph]
-        if route_locations:
-            axis.scatter(
-                [location[0] for location in route_locations],
-                [location[1] for location in route_locations],
-                s=12,
-                c="#dc2626",
-                alpha=0.9,
-                linewidths=0,
-                zorder=6,
-            )
-
-    if obstacle_ids:
-        obstacle_locations = [graph[waypoint_id]["location"] for waypoint_id in obstacle_ids if waypoint_id in graph]
-        if obstacle_locations:
-            axis.scatter(
-                [location[0] for location in obstacle_locations],
-                [location[1] for location in obstacle_locations],
-                s=45,
-                c="#111827",
-                marker="x",
-                linewidths=2.4,
-                zorder=8,
-                label="obstacle",
-            )
-            for waypoint_id in obstacle_ids:
-                location = graph.get(waypoint_id, {}).get("location")
-                if location is None:
-                    continue
-                axis.annotate(
-                    f"OBS\n{waypoint_id}",
-                    xy=(location[0], location[1]),
-                    xytext=(7, -15),
-                    textcoords="offset points",
-                    fontsize=7,
-                    color="#111827",
-                    weight="bold",
-                    zorder=9,
-                )
-
-    if start_id is not None:
-        draw_waypoint_marker(axis, graph, start_id, "#16a34a", "START", "o")
-    if goal_id is not None:
-        draw_waypoint_marker(axis, graph, goal_id, "#be123c", "GOAL", "*")
-
-    axis.autoscale()
-    axis.margins(0.03)
-    axis.set_title(
-        f"CARLA Waypoint Graph ({len(locations)} nodes, {len(segments)} directed edges, {len(route_ids)} route nodes)",
-        fontsize=13,
-        pad=12,
-    )
-    axis.set_xlabel("x")
-    axis.set_ylabel("y")
-    axis.grid(color="#d6dbe1", linewidth=0.35, alpha=0.5)
-    axis.legend(loc="best", fontsize=8, framealpha=0.88)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, bbox_inches="tight")
-    plt.close(figure)
-
-
-def save_svg(
-    graph,
-    output_path,
-    show_nodes,
-    route_ids=None,
-    explored_ids=None,
-    obstacle_ids=None,
-    planned_routes=None,
-    reroutes=None,
-    start_id=None,
-    goal_id=None,
-):
-    locations, segments = build_line_segments(graph)
-    if not locations:
-        raise ValueError("No waypoint locations found in cache file.")
-
-    route_ids = route_ids or []
-    explored_ids = explored_ids or []
-    obstacle_ids = obstacle_ids or []
-    planned_routes = planned_routes or []
-    reroutes = reroutes or []
-    explored_segments = build_explored_segments(graph, explored_ids)
-
-    xs = [location[0] for location in locations.values()]
-    ys = [location[1] for location in locations.values()]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    width = max(max_x - min_x, 1.0)
-    height = max(max_y - min_y, 1.0)
-    canvas_size = 1200
-    padding = 60
-    scale = min((canvas_size - 2 * padding) / width, (canvas_size - 2 * padding) / height)
-
-    def project(point):
-        x, y = point
-        projected_x = padding + (x - min_x) * scale
-        projected_y = canvas_size - padding - (y - min_y) * scale
-        return projected_x, projected_y
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_path, "w", encoding="utf-8") as svg_file:
-        svg_file.write(
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{canvas_size}" '
-            f'height="{canvas_size}" viewBox="0 0 {canvas_size} {canvas_size}">\n'
-        )
-        svg_file.write('<rect width="100%" height="100%" fill="#f7f8fa"/>\n')
-        svg_file.write(
-            f'<text x="40" y="34" fill="#111827" font-family="Arial, sans-serif" '
-            f'font-size="20">CARLA Waypoint Graph ({len(locations)} nodes, '
-            f'{len(segments)} directed edges, {len(route_ids)} route nodes)</text>\n'
-        )
-
-        for start, end in segments:
-            x1, y1 = project(start)
-            x2, y2 = project(end)
-            svg_file.write(
-                f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
-                'stroke="#9ca3af" stroke-width="1.2" stroke-opacity="0.34"/>\n'
-            )
-
-        for start, end in explored_segments:
-            x1, y1 = project(start)
-            x2, y2 = project(end)
-            svg_file.write(
-                f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
-                'stroke="#f59e0b" stroke-width="3" stroke-opacity="0.55"/>\n'
-            )
-
-        for route_index, route_record in enumerate(planned_routes):
-            color = "#2563eb" if route_index == 0 else "#7c3aed"
-            for start, end in build_segments_for_ids(graph, route_record.get("route", [])):
-                x1, y1 = project(start)
-                x2, y2 = project(end)
-                svg_file.write(
-                    f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
-                    f'stroke="{color}" stroke-width="3.5" stroke-opacity="0.72" stroke-dasharray="12 8"/>\n'
-                )
-
-        for route_record in reroutes:
-            for start, end in build_segments_for_ids(graph, route_record.get("route", [])):
-                x1, y1 = project(start)
-                x2, y2 = project(end)
-                svg_file.write(
-                    f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
-                    'stroke="#7c3aed" stroke-width="4.5" stroke-opacity="0.88" stroke-dasharray="14 6 4 6"/>\n'
-                )
-
-        for start, end in build_segments_for_ids(graph, route_ids):
-            x1, y1 = project(start)
-            x2, y2 = project(end)
-            svg_file.write(
-                f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
-                'stroke="#dc2626" stroke-width="6" stroke-opacity="0.95"/>\n'
-            )
-
-        if show_nodes:
-            for location in locations.values():
-                x, y = project((location[0], location[1]))
-                svg_file.write(
-                    f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4" '
-                    'fill="#111827" fill-opacity="0.72"/>\n'
-                )
-
-        for waypoint_id in route_ids:
-            location = graph.get(waypoint_id, {}).get("location")
-            if location is None:
-                continue
-            x, y = project((location[0], location[1]))
-            svg_file.write(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4" fill="#dc2626"/>\n')
-
-        for waypoint_id in obstacle_ids:
-            location = graph.get(waypoint_id, {}).get("location")
-            if location is None:
-                continue
-            x, y = project((location[0], location[1]))
-            svg_file.write(
-                f'<text x="{x - 5:.2f}" y="{y + 5:.2f}" fill="#111827" '
-                'font-family="Arial, sans-serif" font-size="24" font-weight="700">x</text>\n'
-            )
-            svg_file.write(
-                f'<text x="{x + 12:.2f}" y="{y + 18:.2f}" fill="#111827" '
-                f'font-family="Arial, sans-serif" font-size="13" font-weight="700">OBS {waypoint_id}</text>\n'
-            )
-
-        for waypoint_id, color, label in (
-            (start_id, "#16a34a", "START"),
-            (goal_id, "#be123c", "GOAL"),
-        ):
-            if waypoint_id is None:
-                continue
-            location = graph.get(waypoint_id, {}).get("location")
-            if location is None:
-                continue
-            x, y = project((location[0], location[1]))
-            svg_file.write(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="9" fill="{color}" stroke="white" stroke-width="2"/>\n')
-            svg_file.write(
-                f'<text x="{x + 12:.2f}" y="{y - 10:.2f}" fill="{color}" '
-                f'font-family="Arial, sans-serif" font-size="16" font-weight="700">{label} {waypoint_id}</text>\n'
-            )
-
-        svg_file.write('<rect x="40" y="55" width="268" height="130" rx="6" fill="white" fill-opacity="0.86" stroke="#d1d5db"/>\n')
-        svg_file.write('<line x1="58" y1="78" x2="108" y2="78" stroke="#9ca3af" stroke-width="2" stroke-opacity="0.5"/>\n')
-        svg_file.write('<text x="120" y="83" fill="#374151" font-family="Arial, sans-serif" font-size="14">possible graph edges</text>\n')
-        svg_file.write('<line x1="58" y1="102" x2="108" y2="102" stroke="#2563eb" stroke-width="3" stroke-dasharray="10 6"/>\n')
-        svg_file.write('<text x="120" y="107" fill="#374151" font-family="Arial, sans-serif" font-size="14">initial planned route</text>\n')
-        svg_file.write('<line x1="58" y1="126" x2="108" y2="126" stroke="#7c3aed" stroke-width="4" stroke-dasharray="12 5 4 5"/>\n')
-        svg_file.write('<text x="120" y="131" fill="#374151" font-family="Arial, sans-serif" font-size="14">D* Lite reroute</text>\n')
-        svg_file.write('<line x1="58" y1="150" x2="108" y2="150" stroke="#dc2626" stroke-width="6"/>\n')
-        svg_file.write('<text x="120" y="155" fill="#374151" font-family="Arial, sans-serif" font-size="14">actual route taken</text>\n')
-        svg_file.write('<text x="80" y="178" fill="#111827" font-family="Arial, sans-serif" font-size="18" font-weight="700">x</text>\n')
-        svg_file.write('<text x="120" y="179" fill="#374151" font-family="Arial, sans-serif" font-size="14">obstacle waypoint</text>\n')
-
-        svg_file.write("</svg>\n")
-
-
-def resolve_visualization_inputs(graph, args):
-    route_payload = parse_id_payload(args.route) if args.route else {}
-    explored_payload = parse_id_payload(args.explored) if args.explored else {}
-    obstacle_payload = parse_id_payload(args.obstacles) if args.obstacles else {}
-
-    route_ids = route_payload.get("route", [])
-    explored_ids = explored_payload.get("route", []) or explored_payload.get("explored", [])
-    obstacle_ids = set(obstacle_payload.get("route", []) or obstacle_payload.get("obstacles", []))
-    obstacle_ids.update(route_payload.get("obstacles", []))
-
-    planned_routes = route_payload.get("planned_routes", [])
-    reroutes = route_payload.get("reroutes", [])
-    planned_routes = [
-        route_record
-        for route_record in planned_routes
-        if not str(route_record.get("label", "")).lower().startswith("reroute")
-    ]
-    for event in route_payload.get("obstacle_events", []):
-        obstacle_ids.update(event.get("obstacles", []))
-    for route_record in reroutes:
-        obstacle_ids.update(route_record.get("obstacles", []))
-        obstacle_ids.update(route_record.get("trigger_obstacles", []))
-
-    start_id = args.start_id or route_payload.get("start")
-    goal_id = args.goal_id or route_payload.get("goal")
-
-    if args.start_location:
-        start_id = closest_waypoint_id(graph, parse_location(args.start_location))
-    if args.goal_location:
-        goal_id = closest_waypoint_id(graph, parse_location(args.goal_location))
-
-    if route_ids and start_id is None:
-        start_id = route_ids[0]
-    if route_ids and goal_id is None:
-        goal_id = route_ids[-1]
-
-    if not route_ids and start_id is not None and goal_id is not None:
-        route_ids = find_shortest_route(graph, start_id, goal_id, blocked_ids=obstacle_ids)
-        if not route_ids:
-            print(f"No route found from {start_id} to {goal_id}.")
-        elif not planned_routes:
-            planned_routes = [
-                {
-                    "label": "pre-obstacle shortest route",
-                    "start": start_id,
-                    "goal": goal_id,
-                    "route": route_ids,
-                    "obstacles": sorted(obstacle_ids),
-                }
-            ]
-
-    return route_ids, explored_ids, sorted(obstacle_ids), planned_routes, reroutes, start_id, goal_id
-
-
-def print_waypoint_summary(graph, limit):
-    print(f"Loaded {len(graph)} waypoints.")
-    for waypoint_id in sorted(graph.keys())[:limit]:
-        location = graph[waypoint_id].get("location")
-        successors = graph[waypoint_id].get("successors", [])
-        print(f"{waypoint_id}: location={location}, successors={successors}")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Visualize Generate_map.py map_cache.txt output.")
-    parser.add_argument("--input", default="map_cache.txt", help="Path to map_cache.txt")
-    parser.add_argument("--output", default="map_cache_graph.png", help="Output image path, such as .png or .svg")
-    parser.add_argument("--dpi", default=220, type=int, help="Output DPI for raster images")
-    parser.add_argument("--hide-nodes", action="store_true", help="Draw only edges")
-    parser.add_argument("--route", help="Route file from D* Lite (.json) or whitespace/comma-separated waypoint IDs")
-    parser.add_argument("--explored", help="Explored waypoint IDs file (.json or plain IDs)")
-    parser.add_argument("--obstacles", help="Obstacle waypoint IDs file (.json or plain IDs)")
-    parser.add_argument("--start-id", type=int, help="Start waypoint ID")
-    parser.add_argument("--goal-id", type=int, help="Goal waypoint ID")
-    parser.add_argument("--start-location", help="Start location as x,y or x,y,z; nearest waypoint is used")
-    parser.add_argument("--goal-location", help="Goal location as x,y or x,y,z; nearest waypoint is used")
-    parser.add_argument("--list-waypoints", action="store_true", help="Print available waypoint IDs and exit")
-    parser.add_argument("--list-limit", default=25, type=int, help="Number of waypoint IDs to print with --list-waypoints")
-    args = parser.parse_args()
-
-    input_path = resolve_path(args.input)
-    output_path = resolve_path(args.output)
-
-    if not input_path.exists():
-        raise FileNotFoundError(f"Could not find input cache file: {input_path}")
-
-    graph = parse_waypoint_graph(input_path)
-    if args.list_waypoints:
-        print_waypoint_summary(graph, args.list_limit)
+def add_route_layer(axis, graph, route_ids):
+    """Draw the main route with stronger visibility."""
+    if not route_ids or len(route_ids) < 2:
         return
 
-    (
-        route_ids,
-        explored_ids,
-        obstacle_ids,
-        planned_routes,
-        reroutes,
-        start_id,
-        goal_id,
-    ) = resolve_visualization_inputs(graph, args)
-    if output_path.suffix.lower() == ".svg":
-        save_svg(
-            graph,
-            output_path,
-            show_nodes=not args.hide_nodes,
-            route_ids=route_ids,
-            explored_ids=explored_ids,
-            obstacle_ids=obstacle_ids,
-            planned_routes=planned_routes,
-            reroutes=reroutes,
-            start_id=start_id,
-            goal_id=goal_id,
-        )
-    else:
-        save_plot(
-            graph,
-            output_path,
-            args.dpi,
-            show_nodes=not args.hide_nodes,
-            route_ids=route_ids,
-            explored_ids=explored_ids,
-            obstacle_ids=obstacle_ids,
-            planned_routes=planned_routes,
-            reroutes=reroutes,
-            start_id=start_id,
-            goal_id=goal_id,
-        )
-    print(f"Saved graph visualization to {output_path}")
+    xs = []
+    ys = []
 
+    for wp_id in route_ids:
+        x, y = graph.nodes[wp_id]["pos"]
+        xs.append(x)
+        ys.append(y)
+
+    axis.plot(
+        xs,
+        ys,
+        color="#dc2626",   
+        linewidth=5.0,     
+        alpha=1.0,        
+        zorder=4,
+        label="Route",
+    )
+
+def extract_path(graph, start_id, goal_id):
+    queue = deque([start_id])
+    parent = {start_id: None}
+
+    while queue:
+        current = queue.popleft()
+
+        if current == goal_id:
+            break
+
+        for neighbor in graph[current].get("successors", []):
+            if neighbor not in parent:
+                parent[neighbor] = current
+                queue.append(neighbor)
+
+    # Reconstruct path
+    if goal_id not in parent:
+        print("No path found!")
+        return []
+
+    path = []
+    node = goal_id
+
+    while node is not None:
+        path.append(node)
+        node = parent[node]
+
+    path.reverse()
+    return path
+
+def draw_background_graph(ax, graph):
+    for node_id, node_data in graph.items():
+        x1, y1 = get_xy(node_data)
+
+        for neighbor in node_data.get("successors", []):
+            if neighbor not in graph:
+                continue
+
+            x2, y2 = get_xy(graph[neighbor])
+
+            ax.plot(
+                [x1, x2],
+                [y1, y2],
+                linewidth=1,
+                color="gray",
+                alpha=0.7
+            )
+
+def save_plot(figure, axis, output_path):
+    """Finalize and save plot."""
+    axis.set_title("Waypoint Graph Visualization", fontsize=12)
+    axis.legend(loc="best", fontsize=8, framealpha=0.9)
+
+    plt.savefig(output_path, dpi=200)
+    plt.close(figure)
+
+def get_xy(node_data):
+    """
+    Extract (x, y) from multiple possible formats.
+    """
+
+    # Case 1: direct x/y
+    if isinstance(node_data, dict) and "x" in node_data and "y" in node_data:
+        return node_data["x"], node_data["y"]
+
+    # Case 2: pos tuple
+    if "pos" in node_data:
+        return node_data["pos"]
+
+    # Case 3: location
+    if "location" in node_data:
+        loc = node_data["location"]
+
+        if isinstance(loc, (tuple, list)):
+            return loc[0], loc[1]
+
+        if isinstance(loc, dict):
+            return loc["x"], loc["y"]
+
+    # Case 4: transform.location
+    if "transform" in node_data:
+        loc = node_data["transform"]["location"]
+
+        if isinstance(loc, (tuple, list)):
+            return loc[0], loc[1]
+
+        return loc["x"], loc["y"]
+
+    # Case 5: CARLA waypoint
+    if "waypoint" in node_data:
+        loc = node_data["waypoint"].transform.location
+        return loc.x, loc.y
+
+    raise ValueError(f"Unknown node format: {node_data}")
+
+def pick_start_and_goal(graph):
+    """
+    Picks two nodes from the graph as start and goal.
+    Simple fallback: first and last node.
+    """
+
+    nodes = list(graph.keys())
+
+    if len(nodes) < 2:
+        return None, None
+
+    return nodes[0], nodes[-1]
+
+def draw_path(axis, graph, path):
+    for i in range(len(path) - 1):
+        n1 = path[i]
+        n2 = path[i + 1]
+
+        x1, y1 = get_xy(graph[n1])
+        x2, y2 = get_xy(graph[n2])
+
+        axis.plot(
+            [x1, x2],
+            [y1, y2],
+            color="blue",
+            linewidth=3,
+            zorder=5,
+            label="Path" if i == 0 else ""
+        )
+
+def main():
+    import matplotlib.pyplot as plt
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default="map_cache.txt")
+    args = parser.parse_args()
+
+    # --- load graph using YOUR function ---
+    input_path = resolve_path(args.input)
+    graph = parse_waypoint_graph(input_path)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Draw background graph
+    draw_background_graph(ax, graph)
+
+    # Pick start/goal
+    start_id, goal_id = pick_start_and_goal(graph)
+
+    print("Start ID:", start_id)
+    print("Goal ID:", goal_id)
+
+    # Plot START
+    if start_id is not None:
+        sx, sy = get_xy(graph[start_id])
+        ax.scatter(
+            sx, sy,
+            color="lime",
+            s=120,
+            edgecolors="black",
+            linewidths=1.5,
+            zorder=5,
+            label="Start"
+        )
+
+    # Plot GOAL
+    if goal_id is not None:
+        gx, gy = get_xy(graph[goal_id])
+        ax.scatter(
+            gx, gy,
+            color="red",
+            s=120,
+            edgecolors="black",
+            linewidths=1.5,
+            zorder=5,
+            label="Goal"
+        )
+
+    path = extract_path(graph, start_id, goal_id)
+    if path:
+        print("Path:", path)
+        draw_path(ax, graph, path)
+
+        anim = animate_agent(ax, graph, path)
+
+        # Styling
+        ax.set_aspect("equal")
+        ax.set_title("Map Cache Visualization")
+
+        # Only show legend if something exists
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(loc="best", fontsize=8, framealpha=0.9)
+
+        plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
+        plt.show()
+    else:
+        print("No path found")
 
 if __name__ == "__main__":
     main()
+
