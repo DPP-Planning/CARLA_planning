@@ -237,7 +237,6 @@ class BasicAgentD(BasicAgent):
 if __name__ == "__main__":
     print("Entering main.")
 
-    assert(False)
     client = carla.Client("localhost", 9000)
     client.set_timeout(10)
     world = client.get_world()
