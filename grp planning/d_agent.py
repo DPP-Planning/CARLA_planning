@@ -12,7 +12,7 @@ import carla
 import random
 import threading
 import time
-from dlite.dlite import ThreadedDStarLite, DStarLite
+from dLite.dlite import ThreadedDStarLite, DStarLite
 
 class MPDataFrame():
     """
@@ -237,6 +237,7 @@ class BasicAgentD(BasicAgent):
 if __name__ == "__main__":
     print("Entering main.")
 
+    assert(False)
     client = carla.Client("localhost", 9000)
     client.set_timeout(10)
     world = client.get_world()

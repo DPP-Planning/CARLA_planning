@@ -5,7 +5,7 @@ import random
 import time
 
 # from queue import PriorityQueue
-from PriorityQueueDLite import PriorityQueue, Priority
+from dLite.PriorityQueueDLite import PriorityQueue, Priority
 import sys
 import os
 from pathlib import Path
@@ -17,7 +17,6 @@ sys.path.append(str(PROJECT_ROOT / 'grp planning'))
 sys.path.append(str(PROJECT_ROOT))
 
 # Now import from global_route_planning.py
-from global_route_planner import _localize
 from Generate_map import gen_map_initial, save_waypoint_graph
 
 import threading
