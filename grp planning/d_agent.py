@@ -259,7 +259,7 @@ if __name__ == "__main__":
         destination = carla.Location(point_b.transform.location)
 
         print("main: building Controller")
-        controller = DPP_Controller(vehicle, point_b, spawn_points)
+        controller = DPP_Controller(vehicle, destination, spawn_points)
 
         print("main: starting agent")
         controller.run()
