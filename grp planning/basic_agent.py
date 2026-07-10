@@ -30,7 +30,6 @@ from agents.tools.misc import (
     )
 from agents.navigation.collision import car_mesh
 
-
 import numpy as np
 from itertools import tee
 import threading
@@ -148,7 +147,6 @@ class BasicAgent(object):
         # self._obstacle_ttl_ticks = 8
         self._obstacle_ttl_ticks = 200
         self._position_change_threshold = 0.05
-        self._obstacle_prediction_seconds = 1.0
 
         # Lane Change
         self._lc_attempts = 0
@@ -222,8 +220,6 @@ class BasicAgent(object):
             self._max_brake = opt_dict['max_brake']
         if 'offset' in opt_dict:
             self._offset = opt_dict['offset']
-        if 'obstacle_prediction_seconds' in opt_dict:
-            self._obstacle_prediction_seconds = float(opt_dict['obstacle_prediction_seconds'])
 
         # Initialize the planners
         # if isinstance(grp_inst, GlobalRoutePlanner):
@@ -316,10 +312,7 @@ class BasicAgent(object):
 
         if type(end_location) is not list:
             if not start_location:
-                if not isinstance(self._local_planner.target_waypoint, carla.Waypoint):
-                    start_location = self._local_planner.target_waypoint
-                else:
-                    start_location = self._local_planner.target_waypoint.transform.location
+                start_location = self._local_planner.target_waypoint.transform.location
                 # start_location = self._vehicle.get_location()
                 clean_queue = True
             else:
@@ -633,6 +626,7 @@ class BasicAgent(object):
         ego_location = self._vehicle.get_location()
         plan_queue = list(self._local_planner.get_plan())
         plan_waypoints = [wp for wp, _ in plan_queue]
+        path_blocked_by_bbox = False
         blocking_candidates = []
 
 
@@ -652,11 +646,12 @@ class BasicAgent(object):
                     continue
 
                 if obs_mesh.contains_waypoint(plan_wp):
+                    path_blocked_by_bbox = True
                     hazard_obstacle = True
                     blocking_candidates.append(actor)
                     break
 
-            if hazard_obstacle:
+            if path_blocked_by_bbox:
                 break
 
         # Check if the vehicle is affected by a red traffic light
@@ -667,25 +662,11 @@ class BasicAgent(object):
 
         control = self._local_planner.run_step()
 
-        print(f"blocking candidates: {blocking_candidates}")
-        print(f"obstacle snapshot: {self._get_seen_obstacles_snapshot()}")
-
         if hazard_obstacle and hazard_light:
             control = self.add_emergency_stop(control)
         elif hazard_obstacle:
 
-            obstacle_loc = self.get_detected_agent_attribute(
-                blocking_candidates[0].id,
-                'location',
-                default=blocking_candidates[0].get_location()
-            )
-
-            obstacle_wpt = self._map.get_waypoint(obstacle_loc, lane_type=carla.LaneType.Any)
-
-            adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(obstacle_wpt)
-
-            if adjacent_lane_blocked:
-                print("adjacent lane blocked: ", obstacle_wpt)
+            adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(blocking_candidates[0])
             
             # if obstacle_wpt and (adjacent_lane_blocked or (left_blocked and right_blocked)):
             if blocking_candidates and adjacent_lane_blocked:
@@ -700,16 +681,14 @@ class BasicAgent(object):
                 print("Entered obstacle resolution")
                 print("Replanning around obstacle: ", end="")
                 for candidate in blocking_candidates:
-                    candidate_loc = self.get_detected_agent_attribute(candidate.id, 'location', default=candidate.get_location())
-                    print(candidate_loc, end="; ")
+                    print(candidate.location, end="; ")
                 print()
 
                 self._previous_obstacle = set(blocking_candidates)
                 self.set_destination(self._destination, None)
 
                 for candidate in blocking_candidates:
-                    candidate_loc = self.get_detected_agent_attribute(candidate.id, 'location', default=candidate.get_location())
-                    self._world.debug.draw_string(candidate_loc, 'Obstacle', draw_shadow=False,
+                    self._world.debug.draw_string(candidate.location, 'Obstacle', draw_shadow=False,
                     color=carla.Color(r=255, g=0, b=0), life_time=15.0,
                     persistent_lines=True)
 
@@ -746,21 +725,12 @@ class BasicAgent(object):
             current_velocity = obstacle_actor.get_velocity()
             with self._seen_obstacles_lock:
                 previous_entry = self._seen_obstacles.get(obstacle_actor.id)
-                is_new_obstacle = previous_entry is None
                 previous_location = previous_entry['location'] if previous_entry else None
                 position_changed = True
-                position_vector_xy = None
                 if previous_location:
                     position_changed = (
                         current_location.distance(previous_location) > self._position_change_threshold
                     )
-                    raw_position_vector_xy = np.array([
-                        current_location.x - previous_location.x,
-                        current_location.y - previous_location.y
-                    ], dtype=float)
-                    vector_norm = np.linalg.norm(raw_position_vector_xy)
-                    if vector_norm > 0.0:
-                        position_vector_xy = raw_position_vector_xy / vector_norm
 
                 self._seen_obstacles[obstacle_actor.id] = {
                     'actor': obstacle_actor,
@@ -768,16 +738,8 @@ class BasicAgent(object):
                     'ttl': self._obstacle_ttl_ticks,
                     'location': current_location,
                     'velocity': current_velocity,
-                    'position_changed': position_changed,
-                    'position_vector_xy': position_vector_xy
+                    'position_changed': position_changed
                 }
-
-                if is_new_obstacle:
-                    print(
-                        f"[Obstacle Detected] id={obstacle_actor.id}, "
-                        f"type={obstacle_actor.type_id}, "
-                        f"location={current_location}"
-                    )
         except RuntimeError:
             return
 
@@ -791,35 +753,10 @@ class BasicAgent(object):
                     'ttl': obs_data['ttl'],
                     'location': obs_data.get('location'),
                     'velocity': obs_data.get('velocity'),
-                    'position_changed': obs_data.get('position_changed', False),
-                    'position_vector_xy': obs_data.get('position_vector_xy')
+                    'position_changed': obs_data.get('position_changed', False)
                 }
                 for obs_data in self._seen_obstacles.values()
             ]
-
-    def get_detected_agent(self, actor_id):
-        """Return a copy of the stored data for a detected agent by actor id, or None."""
-        with self._seen_obstacles_lock:
-            obs_data = self._seen_obstacles.get(actor_id)
-            if obs_data is None:
-                return None
-
-            return {
-                'actor': obs_data['actor'],
-                'mesh': obs_data['mesh'],
-                'ttl': obs_data['ttl'],
-                'location': obs_data.get('location'),
-                'velocity': obs_data.get('velocity'),
-                'position_changed': obs_data.get('position_changed', False),
-                'position_vector_xy': obs_data.get('position_vector_xy')
-            }
-
-    def get_detected_agent_attribute(self, actor_id, attribute_name, default=None):
-        """Return one stored attribute for a detected agent by actor id, else default."""
-        agent_data = self.get_detected_agent(actor_id)
-        if agent_data is None:
-            return default
-        return agent_data.get(attribute_name, default)
 
     def _tick_seen_obstacles(self):
         """Refresh obstacle TTL each tick and remove stale observations."""
@@ -847,34 +784,20 @@ class BasicAgent(object):
             refreshed_ttl = obs_data['ttl'] - 1
             previous_location = obs_data.get('location')
             position_changed = True
-            position_vector_xy = None
             if previous_location:
                 position_changed = (
                     refreshed_location.distance(previous_location) > self._position_change_threshold
                 )
-                raw_position_vector_xy = np.array([
-                    refreshed_location.x - previous_location.x,
-                    refreshed_location.y - previous_location.y
-                ], dtype=float)
-                vector_norm = np.linalg.norm(raw_position_vector_xy)
-                if vector_norm > 0.0:
-                    position_vector_xy = raw_position_vector_xy / vector_norm
 
             refreshed_data[obs_id] = {
                 'mesh': refreshed_mesh,
                 'ttl': refreshed_ttl,
                 'location': refreshed_location,
                 'velocity': refreshed_velocity,
-                'position_changed': position_changed,
-                'position_vector_xy': position_vector_xy
+                'position_changed': position_changed
             }
 
             self._draw_obstacle_bbox(refreshed_mesh)
-            self._draw_predicted_obstacle_bbox(
-                refreshed_mesh,
-                refreshed_velocity,
-                self._obstacle_prediction_seconds
-            )
 
             if refreshed_ttl <= 0:
                 expired_ids.add(obs_id)
@@ -893,7 +816,6 @@ class BasicAgent(object):
                 self._seen_obstacles[obs_id]['location'] = refreshed['location']
                 self._seen_obstacles[obs_id]['velocity'] = refreshed['velocity']
                 self._seen_obstacles[obs_id]['position_changed'] = refreshed['position_changed']
-                self._seen_obstacles[obs_id]['position_vector_xy'] = refreshed['position_vector_xy']
 
     def _draw_obstacle_bbox(self, mesh_obj):
         """Draw the obstacle footprint by connecting all bounding-box corners with lines."""
@@ -917,75 +839,65 @@ class BasicAgent(object):
                 persistent_lines=False
             )
 
-    def _draw_predicted_obstacle_bbox(self, mesh_obj, velocity, prediction_seconds):
-        """Draw predicted obstacle footprint in blue using velocity over prediction_seconds."""
-        corners = mesh_obj.corners
-        if len(corners) < 2:
-            return
-        if velocity is None:
-            return
-        if prediction_seconds <= 0.0:
-            return
-
-        velocity_xy = np.array([velocity.x, velocity.y], dtype=float)
-        if np.linalg.norm(velocity_xy) <= 0.0:
-            return
-
-        displacement_xy = velocity_xy * float(prediction_seconds)
-        dx = float(displacement_xy[0])
-        dy = float(displacement_xy[1])
-
-        predicted_corners = [
-            carla.Location(x=float(c.x + dx), y=float(c.y + dy), z=float(c.z))
-            for c in corners
-        ]
-
-        cx = sum(p.x for p in predicted_corners) / len(predicted_corners)
-        cy = sum(p.y for p in predicted_corners) / len(predicted_corners)
-        ordered_corners = sorted(predicted_corners, key=lambda p: np.arctan2(p.y - cy, p.x - cx))
-
-        for i in range(len(ordered_corners)):
-            start = ordered_corners[i]
-            end = ordered_corners[(i + 1) % len(ordered_corners)]
-            self._world.debug.draw_line(
-                start,
-                end,
-                thickness=0.08,
-                color=carla.Color(r=0, g=100, b=255),
-                life_time=0.2,
-                persistent_lines=False
-            )
-
     def _adjacent_lane_waypoints_blocked(self, obstacle_wpt):
         """Return True if left/right adjacent lane waypoint near obstacle is occupied by a seen obstacle mesh."""
         if not obstacle_wpt:
             return False
 
-        left_wp = obstacle_wpt.get_left_lane()
-        right_wp = obstacle_wpt.get_right_lane()
+        # left_wp = obstacle_wpt.get_left_lane()
+        # right_wp = obstacle_wpt.get_right_lane()
+        # candidate_wps = [wp for wp in (left_wp, right_wp) if wp and wp.lane_type == carla.LaneType.Driving]
+
+
+        left_wp = obstacle_wpt.get_left_lane() if obstacle_wpt else None
+        right_wp = obstacle_wpt.get_right_lane() if obstacle_wpt else None
+        
+        if left_wp and left_wp.lane_type != carla.LaneType.Driving: left_wp = True
+        if right_wp and right_wp.lane_type != carla.LaneType.Driving: right_wp = True
+
+        candidate_wps = [wp for wp in (left_wp, right_wp) if wp is not None]
+        
+        if not candidate_wps:
+            return left_wp, right_wp
+
         obs_data = self._get_seen_obstacles_snapshot()
 
-        def waypoint_blocked_by_seen_obstacle(candidate_wp):
-            if candidate_wp is None or candidate_wp.lane_type != carla.LaneType.Driving:
-                return True
+        if len(obs_data) == 0:
+            print("No Obstacles")
+            return False, False
 
-            candidate_loc = candidate_wp.transform.location
+        candidates_blocked = []
+
+        # Convert the output into a pair of booleans for left and right lane blockage
+        for candidate_wp in candidate_wps:
+            print(f"Candidate: {candidate_wp.transform.location}")
+            lane_blocked = False
+
             for obs in obs_data:
                 obs_mesh = obs['mesh']
-                if obs_mesh.contains_waypoint(candidate_loc):
-                    return True
-            return False
 
-        left_blocked = waypoint_blocked_by_seen_obstacle(left_wp)
-        right_blocked = waypoint_blocked_by_seen_obstacle(right_wp)
+                can_distance = obs_mesh.center.location.distance(candidate_wp.transform.location)
+                contains_wpt = obs_mesh.contains_waypoint(candidate_wp.transform.location)
 
-        print("left_blocked:", left_blocked, "right_blocked:", right_blocked)
+                blocking = can_distance < 0.2 or contains_wpt
 
-        if left_blocked and right_blocked:
-            return True
-        else:
-            return False
+                if blocking:
+                    print(f"- Obstacle blocking, distance from candidate {can_distance}")
+                    print(f"- Candidate Lane is Blocked, proceeding...")
+                    lane_blocked = True
+                    break
+                else:
+                    print(f"- Obstacle not blocking, distance from candidate {can_distance}")
+            
+            # Draw String Debug
+            if lane_blocked:
+                self._draw_string("Blocked", candidate_wp.transform.location, color=carla.Color(r=255,g=55,b=0))
+            else:
+                self._draw_string("Open Lane", candidate_wp.transform.location, color=carla.Color(r=0,g=55,b=255))
 
+            candidates_blocked.append(lane_blocked)
+
+        return False not in candidates_blocked
 
     def _get_seen_obstacle_waypoints(self):
         """Convert current obstacle set into waypoints for planning."""
@@ -1094,6 +1006,143 @@ class BasicAgent(object):
                 return (True, traffic_light)
 
         return (False, None)
+
+    def _vehicle_obstacle_detected(self, vehicle_list=None, max_distance=None, up_angle_th=90, low_angle_th=0, lane_offset=0):
+        """
+        Method to check if there is a vehicle in front of the agent blocking its path.
+
+            :param vehicle_list (list of carla.Vehicle): list contatining vehicle objects.
+                If None, all vehicle in the scene are used
+            :param max_distance: max freespace to check for obstacles.
+                If None, the base threshold value is used
+        """
+        def get_route_polygon():
+            route_bb = []
+            extent_y = self._vehicle.bounding_box.extent.y
+            r_ext = extent_y + self._offset
+            l_ext = -extent_y + self._offset
+            r_vec = ego_transform.get_right_vector()
+            p1 = ego_location + carla.Location(r_ext * r_vec.x, r_ext * r_vec.y)
+            p2 = ego_location + carla.Location(l_ext * r_vec.x, l_ext * r_vec.y)
+            route_bb.extend([[p1.x, p1.y, p1.z], [p2.x, p2.y, p2.z]])
+
+            for pt, _ in self._local_planner.get_plan():
+
+                if isinstance(pt, carla.Waypoint):
+                    wp = pt
+
+                    if ego_location.distance(wp.transform.location) > max_distance:
+                        break
+
+                    r_vec = wp.transform.get_right_vector()
+                    p1 = wp.transform.location + carla.Location(r_ext * r_vec.x, r_ext * r_vec.y)
+                    p2 = wp.transform.location + carla.Location(l_ext * r_vec.x, l_ext * r_vec.y)
+                    route_bb.extend([[p1.x, p1.y, p1.z], [p2.x, p2.y, p2.z]])
+
+                elif isinstance(pt, carla.Location):
+                    loc = pt
+
+                    if ego_location.distance(loc) > max_distance:
+                        break
+
+                    wp = self._map.get_waypoint(loc)
+
+                    r_vec = wp.transform.get_right_vector()
+                    p1 = wp.transform.location + carla.Location(r_ext * r_vec.x, r_ext * r_vec.y)
+                    p2 = wp.transform.location + carla.Location(l_ext * r_vec.x, l_ext * r_vec.y)
+                    route_bb.extend([[p1.x, p1.y, p1.z], [p2.x, p2.y, p2.z]])
+
+            # Two points don't create a polygon, nothing to check
+            if len(route_bb) < 3:
+                return None, None, None, None
+
+            return Polygon(route_bb)
+
+        if self._ignore_vehicles:
+            return (False, None, -1, None)
+
+        if not vehicle_list:
+            vehicle_list = self._world.get_actors().filter("*vehicle*")
+
+        if not max_distance:
+            max_distance = self._base_vehicle_threshold
+
+        ego_transform = self._vehicle.get_transform()
+        ego_location = ego_transform.location
+        ego_wpt = self._map.get_waypoint(ego_location)
+
+        # Get the right offset
+        if ego_wpt.lane_id < 0 and lane_offset != 0:
+            lane_offset *= -1
+
+        # Get the transform of the front of the ego
+        ego_front_transform = ego_transform
+        ego_front_transform.location += carla.Location(
+            self._vehicle.bounding_box.extent.x * ego_transform.get_forward_vector())
+
+        opposite_invasion = abs(self._offset) + self._vehicle.bounding_box.extent.y > ego_wpt.lane_width / 2
+        use_bbs = self._use_bbs_detection or opposite_invasion or ego_wpt.is_junction
+
+        # Get the route bounding box
+        route_polygon = get_route_polygon()
+
+        for target_vehicle in vehicle_list:
+            if target_vehicle.id == self._vehicle.id:
+                continue
+
+            target_transform = target_vehicle.get_transform()
+            if target_transform.location.distance(ego_location) > max_distance:
+                continue
+
+            target_wpt = self._map.get_waypoint(target_transform.location, lane_type=carla.LaneType.Any)
+
+            # General approach for junctions and vehicles invading other lanes due to the offset
+            if (use_bbs or target_wpt.is_junction) and route_polygon:
+
+                target_bb = target_vehicle.bounding_box
+                target_vertices = target_bb.get_world_vertices(target_vehicle.get_transform())
+                target_list = [[v.x, v.y, v.z] for v in target_vertices]
+                target_polygon = Polygon(target_list)
+
+                if route_polygon.intersects(target_polygon):
+                    return (True, target_vehicle, compute_distance(target_vehicle.get_location(), ego_location), target_wpt)
+
+            # Simplified approach, using only the plan waypoints (similar to TM)
+            else:
+                if target_wpt.road_id != ego_wpt.road_id or target_wpt.lane_id != ego_wpt.lane_id  + lane_offset:
+                    next_pt = self._local_planner.get_incoming_waypoint_and_direction(steps=3)[0]
+
+                    if not next_pt:
+                        continue
+
+                    if isinstance(next_pt, carla.Waypoint):
+                        next_wpt = next_pt
+                        if target_wpt.road_id != next_wpt.road_id or target_wpt.lane_id != next_wpt.lane_id  + lane_offset:
+                            continue
+                    elif isinstance(next_pt, carla.Location):
+                        next_wpt = self._map.get_waypoint(next_pt)
+                        if target_wpt.road_id != next_wpt.road_id or target_wpt.lane_id != next_wpt.lane_id  + lane_offset:
+                            continue
+
+                    if not next_wpt:
+                        continue
+                    if target_wpt.road_id != next_wpt.road_id or target_wpt.lane_id != next_wpt.lane_id  + lane_offset:
+                        continue
+
+                target_forward_vector = target_transform.get_forward_vector()
+                target_extent = target_vehicle.bounding_box.extent.x
+                target_rear_transform = target_transform
+                target_rear_transform.location -= carla.Location(
+                    x=target_extent * target_forward_vector.x,
+                    y=target_extent * target_forward_vector.y,
+                )
+                # Send in a list of waypoints to the obstacle. Or lane.id comparison to an obstacle within a certain distance.
+                # Not sure which implementation will work out.
+
+                if is_within_distance(target_rear_transform, ego_front_transform, max_distance, [low_angle_th, up_angle_th]):
+                    return (True, target_vehicle, compute_distance(target_transform.location, ego_transform.location), target_wpt)
+
+        return (False, None, -1, None)
 
     def _generate_lane_change_path(self, waypoint, direction='left', distance_same_lane=10,
                                 distance_other_lane=25, lane_change_distance=25,
