@@ -1,11 +1,13 @@
 import carla
 from time import sleep
 import sys
+from pathlib import Path
 
 sys.path.append('../')
+sys.path.append(str(Path(__file__).resolve().parents[1] / "grp planning"))
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 import random
-from agents.navigation.basic_agent import BasicAgent
+from d_agent import DPP_Controller
 # from agents.navigation.global_route_planner_og import GlobalRoutePlanner # original route planner
 # from agents.navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 
@@ -64,48 +66,11 @@ try:
     # vehicle_2 = world.spawn_actor(vehicle_bp_2, point_d_spawn) #spawning a random vehicle
     # vehicle_2 = world.spawn_actor(vehicle_bp_2, point_c_spawn) #spawning a random vehicle
     # vehicle_3 = world.spawn_actor(vehicle_bp_2, point_e_spawn) #spawn vehicle in way of lane change
-    agent = BasicAgent(vehicle) # Creating a vehicle for agent
-    agent.set_destination(point_b) #Set Location Destination
-    agent._debug = True
-    #
-    # obs = BasicAgent(vehicle_3)
-    # obs.set_destination(point_b)
-
+    controller = DPP_Controller(vehicle, amap.get_waypoint(point_b), spawn_points)
     # print(vehicle.get_location().x, ",", vehicle.get_location().y, point_a_spawn)
     # print(vehicle_2.get_location().x, ",", vehicle.get_location().y, point_c_spawn)
 
-    while True:
-        # if i % 10 == 0: print(f"====================== \n\n {i} \n\n==================")
-        print(f"================== \n\n {i} \n\n==================")
-        # if (i % 1000 == 0):
-        #     print(vehicle.get_location().x, ",", vehicle.get_location().y)
-        if agent.done():
-            print("The target has been reached, stopping the simulation")
-            break
-
-        # if obs.done() and vehicle_3.is_alive:
-        #     vehicle_3.destroy()
-
-
-        # if i == 50:
-        #     vehicle_2.destroy()
-
-        # if i == 150:
-        #     vehicle_3.destroy()
-
-        print("Agent:")
-        vehicle.apply_control(agent.run_step())
-        #
-        # if vehicle_3.is_alive:
-        #     print("Obs:")
-        #     if i > 4000:
-        #         vehicle_3.apply_control(obs.run_step())
-        #     else:
-        #         print(" - waiting...")
-
-        i += 1
-
-        # sleep(1.0)
+    controller.run()
 
 
 finally:
