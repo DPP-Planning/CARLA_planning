@@ -13,6 +13,7 @@ import random
 import threading
 import time
 from dLite.dlite import ThreadedDStarLite, DStarLite
+from agents.navigation.Generate_map import gen_map_initial
 
 class MPDataFrame():
     """
@@ -34,6 +35,13 @@ class DPP_Controller():
         self._destination = destination
         self._world = self._vehicle.get_world()
         self._map = self._world.get_map()
+
+        map_data = gen_map_initial(
+            self._map,
+            start_waypoint=self._map.get_waypoint(self._vehicle.get_location()),
+            goal_waypoint=self._map.get_waypoint(self._destination),
+        )
+
         self._all_waypoints = map_data.all_waypoints
         self._wp_pts = map_data.wp_pts
 
@@ -109,7 +117,7 @@ class BasicAgentD(BasicAgent):
         
         self._vehicle_controller = None
         self._wp_queue_size = 5
-        self._wp_queue = Queue(max_size=self._wp_queue_size)
+        self._wp_queue = Queue()
         self._search = None
         
     def init_controller(self):
