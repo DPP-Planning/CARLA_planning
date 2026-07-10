@@ -6,11 +6,13 @@ aren't being marked as vehicles.
 import carla
 from time import sleep
 import sys
+from pathlib import Path
 
 sys.path.append('../')
+sys.path.append(str(Path(__file__).resolve().parents[1] / "grp planning"))
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 import random
-from agents.navigation.basic_agent import BasicAgent
+from d_agent import DPP_Controller
 
 client = carla.Client("localhost", 9000)
 client.set_timeout(10)
@@ -28,8 +30,7 @@ agent_spawn = spawn_points[13]
 destination = spawn_points[75]
 
 agent_vehicle = world.spawn_actor(vbp, agent_spawn)
-agent = BasicAgent(agent_vehicle)
-agent.set_destination(destination.location)
+controller = DPP_Controller(agent_vehicle, amap.get_waypoint(destination.location), spawn_points)
 
 obstacle_vehicle = world.spawn_actor(vbp, carla.Transform(carla.Location(
     agent_spawn.location.x, 
@@ -40,17 +41,7 @@ obstacle_vehicle = world.spawn_actor(vbp, carla.Transform(carla.Location(
 i = 0
 
 try:
-    while True:
-        print(f"================== \n\n {i} \n\n==================")
-
-        if agent.done():
-            print("The target has been reached, stopping the simulation")
-            break
-
-        print("Agent:")
-        agent_vehicle.apply_control(agent.run_step())
-
-        i += 1
+    controller.run()
 
 finally:
     if (agent_vehicle.is_alive):

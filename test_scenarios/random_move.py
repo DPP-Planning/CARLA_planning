@@ -1,11 +1,13 @@
 import carla
 from time import sleep
 import sys
+from pathlib import Path
 
 sys.path.append('../')
+sys.path.append(str(Path(__file__).resolve().parents[1] / "grp planning"))
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 import random
-from agents.navigation.basic_agent import BasicAgent
+from d_agent import DPP_Controller
 # from agents.navigation.global_route_planner_og import GlobalRoutePlanner # original route planner
 # from agents.navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 
@@ -38,22 +40,8 @@ i = 0
 try:
     vehicle = world.spawn_actor(vehicle_bp, point_a_spawn) #spawning a random vehicle
     print ("starting vehicle spawn: ", point_a_spawn)
-    agent = BasicAgent(vehicle) # Creating a vehicle for agent
-    agent.set_destination(point_b) #Set Location Destination
-
-    agent._debug = True
-
-    while True:
-        print(f"================== \n\n {i} \n\n==================")
-        if agent.done():
-            print("The target has been reached, stopping the simulation")
-            break
-
-        print("Agent:")
-        vehicle.apply_control(agent.run_step())
-
-        i += 1
-        # sleep(0.5)
+    controller = DPP_Controller(vehicle, amap.get_waypoint(point_b), spawn_points)
+    controller.run()
 
 finally:
     if (vehicle.is_alive):

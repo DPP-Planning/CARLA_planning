@@ -1,11 +1,13 @@
 import carla
 from time import sleep
 import sys
+from pathlib import Path
 
 sys.path.append('../')
+sys.path.append(str(Path(__file__).resolve().parents[1] / "grp planning"))
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 import random
-from agents.navigation.basic_agent import BasicAgent
+from d_agent import DPP_Controller
 # from agents.navigation.global_route_planner_og import GlobalRoutePlanner # original route planner
 # from agents.navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 
@@ -66,21 +68,10 @@ try:
     vehicle_2 = world.spawn_actor(vehicle_bp_2, point_c_spawn) #spawning a random vehicle
     # vehicle_3 = world.spawn_actor(vehicle_bp_2, point_e_spawn) #spawn vehicle in way of lane change
     vehicle_4 = world.spawn_actor(vehicle_bp_2, point_f_spawn)
-    agent = BasicAgent(vehicle) # Creating a vehicle for agent
-    agent.set_destination(point_b) #Set Location Destination
-
-    # obs = BasicAgent(vehicle_3)
-    # obs.set_destination(point_b)
-
-    obs2 = BasicAgent(vehicle_4)
-    obs2.set_destination(point_b)
-
-    agent._debug = True
-    # obs._debug = False
-    obs2._debug =  True
+    controller = DPP_Controller(vehicle, amap.get_waypoint(point_b), spawn_points)
 
     with open("out/basic_agent.log", "w") as f:
-        f.write(f"Primary Agent ID: {agent._vehicle.id}\n")
+        f.write(f"Primary Agent ID: {vehicle.id}\n")
         # f.write(f"MOB 1 Agent ID: {obs._vehicle.id}\n")
         # f.write(f"MOB 2 Agent ID: {obs2._vehicle.id}\n")
         f.write(f"Primary Agent Starting Location: {point_a_spawn}\n")
@@ -92,46 +83,7 @@ try:
     # print(vehicle.get_location().x, ",", vehicle.get_location().y, point_a_spawn)
     # print(vehicle_2.get_location().x, ",", vehicle.get_location().y, point_c_spawn)
 
-    while True:
-        # if i % 10 == 0: print(f"====================== \n\n {i} \n\n==================")
-        print(f"================== \n\n {i} \n\n==================")
-        # if (i % 1000 == 0):
-        #     print(vehicle.get_location().x, ",", vehicle.get_location().y)
-        if agent.done():
-            print("The target has been reached, stopping the simulation")
-            break
-
-        # if obs.done() and vehicle_3.is_alive:
-        #     vehicle_3.destroy()
-
-        if obs2.done() and vehicle_4.is_alive:
-            vehicle_4.destroy()
-
-        # if i == 50:
-        #     vehicle_2.destroy()
-
-        # if i == 150:
-        #     vehicle_3.destroy()
-
-        print("Agent:")
-        vehicle.apply_control(agent.run_step())
-
-        # print("Obs:")
-        # if vehicle_3.is_alive:
-        #     if i > 4000:
-        #         vehicle_3.apply_control(obs.run_step())
-
-        if vehicle_4.is_alive:
-            if i > 6000:
-                vehicle_4.apply_control(obs2.run_step())
-
-        # if vehicle_2.is_alive:
-        #     if i > 10000:
-        #         vehicle_2.destroy()
-
-
-        i += 1
-        # sleep(0.5)
+    controller.run()
 
 finally:
     if (vehicle.is_alive):
