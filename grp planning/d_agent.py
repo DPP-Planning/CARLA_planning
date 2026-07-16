@@ -15,19 +15,8 @@ import time
 from dLite.dlite import ThreadedDStarLite, DStarLite
 from agents.navigation.Generate_map import gen_map_initial
 
-class MPDataFrame():
-    """
-    Data type sent from MP to PS. Includes the ego location and seen obstacles.
-    """
-    def __init__(self, waypoint, seen_obstacles):
-        self.waypoint = waypoint
-        self.obstacles = seen_obstacles
-
-    def get_obstacles(self):
-        return self.obstacles
-    
-    def get_ego_waypoint(self):
-        return self.waypoint
+mp_debug = False
+position_update_frequency = 5
 
 class DPP_Controller():
     def __init__(self, vehicle: carla.Vehicle, destination: carla.Location, waypoints):
@@ -45,14 +34,16 @@ class DPP_Controller():
         self._all_waypoints = map_data.all_waypoints
         self._wp_pts = map_data.wp_pts
 
-        self._search = DStarLite(
+        self._search = ThreadedDStarLite(DStarLite(
             self._world,
             self._map.get_waypoint(self._vehicle.get_location()),
-            self._destination,
+            self._map.get_waypoint(self._destination),
             self._all_waypoints,
             self._wp_pts,
-            self._vehicle
-        )
+            self._vehicle,
+            waypoint_graph=map_data.waypoint_graph,
+            waypoint_lookup=map_data.waypoint_lookup
+        ))
 
         self._agent = BasicAgentD(self._vehicle)
 
@@ -61,7 +52,7 @@ class DPP_Controller():
         Initalize threads and run agent.
         """
         self._agent.init_controller()
-        self._agent.search = self._search
+        self._agent._search = self._search
 
         print("controller: initalizing threads")
 
@@ -75,28 +66,32 @@ class DPP_Controller():
     def motion_planner(self):
         i = 0
 
+        print("mp: motion planner started")
+
         while True:
-            print(f"mp: vehicle step: {i}, vehicle alive: {self._vehicle.is_alive}")
-            
+            if mp_debug: print(f"mp: vehicle step: {i}, vehicle alive: {self._vehicle.is_alive}")
+
             if not self._vehicle.is_alive:
-                print(f"mp: At step {i} - the vehicle died unexpectedly")
+                if mp_debug: print(f"mp: At step {i} - the vehicle died unexpectedly")
                 break
             elif self._agent.done():
-                print(f"mp: At step {i} - the target has been reached, stopping the motion")
+                if mp_debug: print(f"mp: At step {i} - the target has been reached, stopping the motion")
                 break
-            
+
             else:
-                print(f"mp: At step {i} - getting control")
+                if mp_debug: print(f"mp: At step {i} - getting control")
+                control_signal = self._agent.run_step()
+                if mp_debug: print(f"mp: control signal {control_signal}")
                 self._vehicle.apply_control(self._agent.run_step())
-                time.sleep(30) # DEBUG
 
             i += 1
 
         print("mp: motion planner terminated")
 
     def path_search(self):
-        threaded_search = ThreadedDStarLite(self._search)
-        threaded_search.start()
+        self._search.start()
+        #threaded_search = ThreadedDStarLite(self._search)
+        #threaded_search.start()
 
 class BasicAgentD(BasicAgent):
     def __init__(self, vehicle, target_speed=20, opt_dict={}, map_inst=None, grp_inst=None):
@@ -114,12 +109,12 @@ class BasicAgentD(BasicAgent):
         self._base_min_distance = 3.0
         self._distance_ratio = 0.5
         self._follow_speed_limits = False
-        
+
         self._vehicle_controller = None
         self._wp_queue_size = 5
-        self._wp_queue = Queue()
+        self._wp_queue = Queue(maxsize=self._wp_queue_size)
         self._search = None
-        
+
     def init_controller(self):
         self._vehicle_controller = VehiclePIDController(self._vehicle,
                                                         args_lateral=self._args_lateral_dict,
@@ -184,22 +179,24 @@ class BasicAgentD(BasicAgent):
 
         # Get new waypoints if the queue isn't full.
         if not self._wp_queue.full():
-            self.update_queue()
-        
+            if mp_debug: print("mp (basic agent): getting waypoints")
+            self.get_next_waypoints()
+
         # If we don't have waypoints from D*, stop.
         if self._wp_queue.empty():
-            print("mp (basic agent): could not find waypoints, waypoint queue empty")
+            if mp_debug: print("mp (basic agent): could not find waypoints, waypoint queue empty")
             control = carla.VehicleControl()
             self.add_emergency_stop(control)
             return control
         else:
+            if mp_debug: print(f"mp (basic agent): current queue: {self._wp_queue.queue}")
             control = self._vehicle_controller.run_step(self._target_speed, self._wp_queue.get())
 
         if hazard_obstacle and hazard_light:
             control = self.add_emergency_stop(control)
         elif hazard_obstacle:
             adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(blocking_candidates[0])
-            
+
             if blocking_candidates and adjacent_lane_blocked:
 
                 # If obstacle cannot be navigated around, stop.
@@ -233,14 +230,20 @@ class BasicAgentD(BasicAgent):
         """
         Keep getting current best route successors until the queue is full.
         """
-        if self._search is None:
-            print("mp (basic agent): no search reference found, exiting...")
+        if mp_debug: print("mp (basic_agent): getting node successors from path planner")
+        current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
+        succ = self._search.get_best_successor(current_waypoint)
 
-        succ = self._map.get_waypoint(self._vehicle.get_location())
-
-        while not self._wp_queue.full():
-            succ = self._search.get_best_successor(succ)
-            self._wp_queue.put(succ)
+        while True:
+            if isinstance(succ, carla.Waypoint):
+                self._wp_queue.put(succ)
+                if mp_debug: print(f"mp (basic agent): uploaded new successor {succ}, current queue size {self._wp_queue.qsize()}")
+                if self._wp_queue.full():
+                    if mp_debug: print("mp (basic agent): queue is full, exiting.")
+                    break
+            else:
+                print(f"mp (basic_agent): return type of get_successor did not match expected carla.Waypoint (got {type(succ).__name__})")
+                break
 
 if __name__ == "__main__":
     print("Entering main.")
@@ -271,6 +274,10 @@ if __name__ == "__main__":
 
         print("main: starting agent")
         controller.run()
+
+        while vehicle.is_alive:
+            print(f"main: [UPDATE] vehicle at {vehicle.get_location()}")
+            time.sleep(position_update_frequency)
 
     finally:
         if vehicle is not None and vehicle.is_alive:
