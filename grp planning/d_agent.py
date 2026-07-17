@@ -90,8 +90,6 @@ class DPP_Controller():
 
     def path_search(self):
         self._search.start()
-        #threaded_search = ThreadedDStarLite(self._search)
-        #threaded_search.start()
 
 class BasicAgentD(BasicAgent):
     def __init__(self, vehicle, target_speed=20, opt_dict={}, map_inst=None, grp_inst=None):
@@ -140,10 +138,24 @@ class BasicAgentD(BasicAgent):
 
         vehicle_speed = get_speed(self._vehicle) / 5
 
+        # Get new waypoints if the queue isn't full.
+        if not self._wp_queue.full():
+            if mp_debug: print("mp (basic agent): getting waypoints")
+            self.get_next_waypoints()
+
+        # If we don't have waypoints from D*, stop.
+        if self._wp_queue.empty():
+            if mp_debug: print("mp (basic agent): could not find waypoints (waypoint queue empty). emergency stop.")
+            control = carla.VehicleControl()
+            self.add_emergency_stop(control)
+            return control
+        else:
+            if mp_debug: print(f"mp (basic agent): current queue: {self._wp_queue.queue}")
+            control = self._vehicle_controller.run_step(self._target_speed, self._wp_queue.get())
+
         min_vehicle_distance = 25
         ego_location = self._vehicle.get_location()
-        plan_queue = list(self._local_planner.get_plan())
-        plan_waypoints = [wp for wp, _ in plan_queue]
+        plan_waypoints = [wp for wp in self._wp_queue.queue]
         path_blocked_by_bbox = False
         blocking_candidates = []
 
@@ -176,21 +188,6 @@ class BasicAgentD(BasicAgent):
         affected_by_tlight, _ = self._affected_by_traffic_light(self._lights_list, max_tlight_distance)
         if affected_by_tlight:
             hazard_light = True
-
-        # Get new waypoints if the queue isn't full.
-        if not self._wp_queue.full():
-            if mp_debug: print("mp (basic agent): getting waypoints")
-            self.get_next_waypoints()
-
-        # If we don't have waypoints from D*, stop.
-        if self._wp_queue.empty():
-            if mp_debug: print("mp (basic agent): could not find waypoints, waypoint queue empty")
-            control = carla.VehicleControl()
-            self.add_emergency_stop(control)
-            return control
-        else:
-            if mp_debug: print(f"mp (basic agent): current queue: {self._wp_queue.queue}")
-            control = self._vehicle_controller.run_step(self._target_speed, self._wp_queue.get())
 
         if hazard_obstacle and hazard_light:
             control = self.add_emergency_stop(control)
@@ -242,7 +239,7 @@ class BasicAgentD(BasicAgent):
                     if mp_debug: print("mp (basic agent): queue is full, exiting.")
                     break
             else:
-                print(f"mp (basic_agent): return type of get_successor did not match expected carla.Waypoint (got {type(succ).__name__})")
+                #print(f"mp (basic_agent): return type of get_successor did not match expected carla.Waypoint (got {type(succ).__name__})")
                 break
 
 if __name__ == "__main__":
