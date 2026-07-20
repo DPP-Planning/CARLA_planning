@@ -7,11 +7,12 @@ sys.path.append('../')
 sys.path.append(str(Path(__file__).resolve().parents[1] / "grp planning"))
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 import random
-from d_agent import DPP_Controller
+from agents.navigation.d_agent import DPP_Controller
+from agents.navigation.Generate_map import gen_map_initial, save_waypoint_graph
 # from agents.navigation.global_route_planner_og import GlobalRoutePlanner # original route planner
 # from agents.navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 
-client = carla.Client("localhost", 9000)
+client = carla.Client("localhost", 4000)
 client.set_timeout(10)
 world = client.get_world()
 amap = world.get_map()
@@ -68,9 +69,13 @@ try:
     vehicle_2 = world.spawn_actor(vehicle_bp_2, point_c_spawn) #spawning a random vehicle
     # vehicle_3 = world.spawn_actor(vehicle_bp_2, point_e_spawn) #spawn vehicle in way of lane change
     # vehicle_4 = world.spawn_actor(vehicle_bp_2, point_f_spawn)
-    controller = DPP_Controller(vehicle, amap.get_waypoint(point_b), spawn_points)
+    controller = DPP_Controller(vehicle, point_b, spawn_points)
 
     controller.run()
+
+    while vehicle.is_alive:
+        print(f"main: [UPDATE] vehicle at {vehicle.get_location()}")
+        sleep(5)
 
 finally:
     if (vehicle.is_alive):
