@@ -21,13 +21,13 @@ Noted here are the locations of the files to be replaced (from grp planning dire
 |   |   |    ───collision.py
 |   |   |    ───controller.py
 |   |   |    ───d_agent.py
+|   |   |    ───Generate_map.py
 │   │   ├───tools
 |   |   |    ───misc.py
 │   │   └───dLite
 │   │   │   └───dlite.py
 │   │   │    ───PriorityQueueDLite.py
-│   │   └───Generate_map.py
-│   │    ───simple-vehicle.py
+│   │   └───simple-vehicle.py
 ├───examples
 ```
 
