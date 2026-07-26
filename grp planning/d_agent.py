@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, "/home/ubuntu/persistent/CARLA_LATEST/PythonAPI/carla")
 
 # Use old basic agent
-from agents.navigation.basic_agent_copy import BasicAgent
+from agents.navigation.basic_agent import BasicAgent
 from agents.navigation.controller import VehiclePIDController
 from agents.tools.misc import get_speed
 # from dlite import DStarLite
@@ -47,7 +47,12 @@ class DPP_Controller():
 
         self._agent = BasicAgentD(self._vehicle)
 
-    def run(self):
+        self._done = False
+
+    def done(self):
+        return self._done
+
+    def start(self, log_status=True):
         """
         Initalize threads and run agent.
         """
@@ -76,8 +81,8 @@ class DPP_Controller():
                 break
             elif self._agent.done():
                 if mp_debug: print(f"mp: At step {i} - the target has been reached, stopping the motion")
+                self._done = True
                 break
-
             else:
                 if mp_debug: print(f"mp: At step {i} - getting control")
                 control_signal = self._agent.run_step()
@@ -145,12 +150,11 @@ class BasicAgentD(BasicAgent):
 
         # If we don't have waypoints from D*, stop.
         if self._wp_queue.empty():
-            if mp_debug: print("mp (basic agent): could not find waypoints (waypoint queue empty). emergency stop.")
+            if mp_debug: print("mp (basic agent): Could not find waypoints (waypoint queue empty). Emergency stop.")
             control = carla.VehicleControl()
             self.add_emergency_stop(control)
             return control
         else:
-            if mp_debug: print(f"mp (basic agent): current queue: {self._wp_queue.queue}")
             control = self._vehicle_controller.run_step(self._target_speed, self._wp_queue.get())
 
         min_vehicle_distance = 25
@@ -159,7 +163,12 @@ class BasicAgentD(BasicAgent):
         path_blocked_by_bbox = False
         blocking_candidates = []
 
-        for obs_data in self._get_seen_obstacles_snapshot():
+        snapshot = self._get_seen_obstacles_snapshot()
+
+        if mp_debug and len(snapshot) > 0:
+            print(f"mp (basic_agent): found {len(snapshot)} potential obstacles")
+
+        for obs_data in snapshot:
             actor = obs_data['actor']
             if not actor.is_alive:
                 continue
@@ -174,10 +183,12 @@ class BasicAgentD(BasicAgent):
                 if ego_location.distance(plan_wp_location) > min_vehicle_distance:
                     continue
 
-                if obs_mesh.contains_waypoint(plan_wp):
+                if obs_mesh.contains_waypoint(plan_wp) or obs_mesh.center.location.distance(plan_wp.transform.location) < 0.3:
+                    if mp_debug: print("mp (basic_agent): hazard detected.")
                     path_blocked_by_bbox = True
                     hazard_obstacle = True
-                    blocking_candidates.append(actor)
+                    #blocking_candidates.append(actor)
+                    blocking_candidates.append(self._map.get_waypoint(actor.get_location()))
                     break
 
             if path_blocked_by_bbox:
@@ -198,26 +209,28 @@ class BasicAgentD(BasicAgent):
 
                 # If obstacle cannot be navigated around, stop.
 
-                print("Adjacent lane waypoint(s) blocked near obstacle. Emergency stopping.")
+                if mp_debug: print("mp (basic_agent): adjacent lane waypoint(s) blocked near obstacle. Emergency stopping.")
                 control = self.add_emergency_stop(control)
 
             elif blocking_candidates and (self._previous_obstacle is None or set(blocking_candidates) != self._previous_obstacle):
-                print("mp: Entered obstacle resolution")
-                print("mp: Replanning around obstacle(s)")
+                if mp_debug: print("mp: (basic_agent): entered obstacle resolution")
 
                 # If obstacle can be navigated around
                 # 1. Send obstacles and a replan request to D*
                 # 2. Clear queued waypoints.
 
+                if mp_debug: print("mp (basic_agent): sending obstacle information to ps...")
+
                 for candidate in blocking_candidates:
-                    self._search.signal_obstacle(candidate.location)
+                    self._search.signal_obstacle(candidate.transform.location)
 
                 self._previous_obstacle = set(blocking_candidates)
                 self._search.request_replan()
+
                 self._wp_queue.queue.clear()
 
                 for candidate in blocking_candidates:
-                    self._world.debug.draw_string(candidate.location, 'Obstacle', draw_shadow=False,
+                    self._world.debug.draw_string(candidate.transform.location, 'Obstacle', draw_shadow=False,
                     color=carla.Color(r=255, g=0, b=0), life_time=15.0,
                     persistent_lines=True)
 
@@ -228,19 +241,33 @@ class BasicAgentD(BasicAgent):
         Keep getting current best route successors until the queue is full.
         """
         if mp_debug: print("mp (basic_agent): getting node successors from path planner")
-        current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
+
+        if self._wp_queue.empty():
+               current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
+        else:
+               current_waypoint = self._map.get_waypoint(self._wp_queue.queue[-1].transform.location)
+
         succ = self._search.get_best_successor(current_waypoint)
 
         while True:
             if isinstance(succ, carla.Waypoint):
                 self._wp_queue.put(succ)
                 if mp_debug: print(f"mp (basic agent): uploaded new successor {succ}, current queue size {self._wp_queue.qsize()}")
+
                 if self._wp_queue.full():
                     if mp_debug: print("mp (basic agent): queue is full, exiting.")
                     break
+
+                succ = self._search.get_best_successor(succ)
+
             else:
                 #print(f"mp (basic_agent): return type of get_successor did not match expected carla.Waypoint (got {type(succ).__name__})")
                 break
+
+    def done(self):
+         # TODO: establish termination conditions for mp
+         return False
+         #return self._vehicle.get_location().distance(self._destination) < 10
 
 if __name__ == "__main__":
     print("Entering main.")
@@ -270,10 +297,11 @@ if __name__ == "__main__":
         controller = DPP_Controller(vehicle, destination, spawn_points)
 
         print("main: starting agent")
-        controller.run()
+        controller.start()
 
         while vehicle.is_alive:
-            print(f"main: [UPDATE] vehicle at {vehicle.get_location()}")
+            current_loc = vehicle.get_location()
+            print(f"main: [UPDATE] vehicle at {current_loc}, distance form goal {current_loc.distance(destination)}")
             time.sleep(position_update_frequency)
 
     finally:

@@ -840,7 +840,7 @@ class BasicAgent(object):
             )
 
     def _adjacent_lane_waypoints_blocked(self, obstacle_wpt):
-        """Return True if left/right adjacent lane waypoint near obstacle is occupied by a seen obstacle mesh."""
+        """Return True if left + right adjacent lane waypoint near obstacle is occupied by a seen obstacle mesh."""
         if not obstacle_wpt:
             return False
 
@@ -852,25 +852,27 @@ class BasicAgent(object):
         left_wp = obstacle_wpt.get_left_lane() if obstacle_wpt else None
         right_wp = obstacle_wpt.get_right_lane() if obstacle_wpt else None
         
-        if left_wp and left_wp.lane_type != carla.LaneType.Driving: left_wp = True
-        if right_wp and right_wp.lane_type != carla.LaneType.Driving: right_wp = True
+        if left_wp and left_wp.lane_type != carla.LaneType.Driving: left_wp = None
+        if right_wp and right_wp.lane_type != carla.LaneType.Driving: right_wp = None
 
         candidate_wps = [wp for wp in (left_wp, right_wp) if wp is not None]
         
         if not candidate_wps:
-            return left_wp, right_wp
+            #return left_wp, right_wp
+            return True
 
         obs_data = self._get_seen_obstacles_snapshot()
 
         if len(obs_data) == 0:
-            print("No Obstacles")
-            return False, False
+            #print("No Obstacles")
+            #return False, False
+            False
 
         candidates_blocked = []
 
         # Convert the output into a pair of booleans for left and right lane blockage
         for candidate_wp in candidate_wps:
-            print(f"Candidate: {candidate_wp.transform.location}")
+            #print(f"Candidate: {candidate_wp.transform.location}")
             lane_blocked = False
 
             for obs in obs_data:
@@ -882,12 +884,12 @@ class BasicAgent(object):
                 blocking = can_distance < 0.2 or contains_wpt
 
                 if blocking:
-                    print(f"- Obstacle blocking, distance from candidate {can_distance}")
-                    print(f"- Candidate Lane is Blocked, proceeding...")
+                    #print(f"- Obstacle blocking, distance from candidate {can_distance}")
+                    #print(f"- Candidate Lane is Blocked, proceeding...")
                     lane_blocked = True
                     break
-                else:
-                    print(f"- Obstacle not blocking, distance from candidate {can_distance}")
+                #else:
+                    #print(f"- Obstacle not blocking, distance from candidate {can_distance}")
             
             # Draw String Debug
             if lane_blocked:
