@@ -234,8 +234,6 @@ class BasicAgentD(BasicAgent):
                     color=carla.Color(r=255, g=0, b=0), life_time=15.0,
                     persistent_lines=True)
 
-                control = self.add_emergency_stop(control)
-
         return control
 
     def get_next_waypoints(self):
@@ -268,8 +266,8 @@ class BasicAgentD(BasicAgent):
 
     def done(self):
          # TODO: establish termination conditions for mp
-         #return False
-         return self._vehicle.get_location().distance(self._destination) < 5
+         return False
+         #return self._vehicle.get_location().distance(self._destination) < 5
 
 if __name__ == "__main__":
     print("Entering main.")
