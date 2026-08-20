@@ -545,12 +545,12 @@ class ThreadedDStarLite:
         self._stop_event.clear()
         self._needs_replan.set()
         self._planner_thread = threading.Thread(target=self._planner_loop, name="DStarPlannerThread", daemon=True)
-        #self._planner_thread = threading.Thread(target=self._planner_loop_2, name="DStarPlannerThread", daemon=True)
         self._planner_thread.start()
 
         self._dstar.s_last = self._dstar.start
 
     def stop(self, join_timeout=1.0):
+        print("[ThreadedDStarLite] Stopping Planner Thread")
         self._stop_event.set()
         if self._planner_thread:
             self._planner_thread.join(timeout=join_timeout)
@@ -621,6 +621,10 @@ class ThreadedDStarLite:
                 self._dstar.vehicle.get_location()
               )
             )
+
+            if self._dstar.start.transform.location.distance(self._dstar.goal.transform.location) < 3.5:
+                self.stop()
+                continue
 
             if not self._needs_replan.is_set():
                 time.sleep(self.replan_interval)

@@ -49,53 +49,29 @@ class DPP_Controller():
 
         self._agent = BasicAgentD(self._vehicle)
 
-        self._done = False
-
     def done(self):
-        return self._done
+        return self._agent._stop_event.is_set()
 
     def start(self, log_status=True):
         """
         Initalize threads and run agent.
         """
-        self._agent.init_controller()
+        self._agent._destination = self._destination
         self._agent._search = self._search
 
-        print("controller: initalizing threads")
-
-        mp_thread = threading.Thread(target=self.motion_planner)
+        self._agent.init_controller()
 
         print("controller: starting threads")
 
-        mp_thread.start()
-        self.path_search()
-
-    def motion_planner(self):
-        i = 0
-
-        print("mp: motion planner started")
-
-        while True:
-
-            if not self._vehicle.is_alive:
-                break
-            elif self._agent.done():
-                self._done = True
-                break
-            else:
-                control_signal = self._agent.run_step()
-                self._vehicle.apply_control(control_signal)
-
-            i += 1
-
-        print("mp: motion planner terminated")
-
-    def path_search(self):
         self._search.start()
+        self._agent.start()
 
 class BasicAgentD(BasicAgent):
     def __init__(self, vehicle, target_speed=20, opt_dict={}, map_inst=None, grp_inst=None):
         super().__init__(vehicle, target_speed, opt_dict, map_inst, grp_inst)
+
+        self._agent_thread = None
+        self._stop_event = threading.Event()
 
         self._dt = 1.0 / 20.0
         self._target_speed = 20.0
@@ -124,6 +100,12 @@ class BasicAgentD(BasicAgent):
                                                         max_brake=self._max_brake,
                                                         max_steering=self._max_steer)
 
+
+    def start(self):
+        self._stop_event.clear()
+        self._agent_thread = threading.Thread(target=self._agent_loop, name="MotionPlannerThread", daemon=True)
+        self._agent_thread.start()
+
     def run_step(self):
         """
         Modified run_step from Basic Agent which feeds waypoints from D* 
@@ -140,7 +122,6 @@ class BasicAgentD(BasicAgent):
 
         vehicle_speed = get_speed(self._vehicle) / 5
 
-        #if len(self._queue) == 0:
         if len(self._queue) < self._q_max:
             self._get_next_waypoints()
             if len(self._queue) == 0:
@@ -236,11 +217,33 @@ class BasicAgentD(BasicAgent):
 
         return control
 
+    def stop_vehicle(self):
+        control = carla.VehicleControl()
+        control.throttle = 0.0
+        control.steer = 0.0
+        control.brake = 1.0
+        self._vehicle.apply_control(control)
+
     def done(self):
          # TODO: establish termination conditions for mp
          return False
 
     # --- Private Methods --- #
+
+    def _agent_loop(self):
+        print("mp: motion planner started")
+
+        while self._vehicle.get_location().distance(self._destination) > 3.5:
+
+            if not self._vehicle.is_alive:
+                break
+            else:
+                control_signal = self.run_step()
+                self._vehicle.apply_control(control_signal)
+
+        self.stop_vehicle()
+        self._stop_event.set()
+        print("mp: motion planner terminated")
 
     def _get_next_waypoints(self):
         """
@@ -304,9 +307,8 @@ if __name__ == "__main__":
         print("main: starting agent")
         controller.start()
 
-        while vehicle.is_alive:
+        while not controller.done():
             current_loc = vehicle.get_location()
-            print(f"main: [UPDATE] vehicle at {current_loc}, distance form goal {current_loc.distance(destination)}")
             time.sleep(position_update_frequency)
 
     finally:
