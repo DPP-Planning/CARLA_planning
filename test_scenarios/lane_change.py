@@ -46,7 +46,7 @@ try:
         controller = DPP_Controller(vehicle, point_b, spawn_points)
         controller.start()
 
-        while vehicle.is_alive:
+        while not controller.done():
             print(f"main: [UPDATE] vehicle at {vehicle.get_location()}")
             sleep(5)
     # obstacle vehicle(s) destroyed automatically here

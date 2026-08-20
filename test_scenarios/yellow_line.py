@@ -4,6 +4,7 @@ line aren't considered for rerouting. Refactored to use ObstacleSpawner.
 """
 
 import carla
+from time import sleep
 import sys
 from pathlib import Path
 
@@ -49,6 +50,10 @@ try:
 
         controller = DPP_Controller(agent_vehicle, destination.location, spawn_points)
         controller.start()
+
+        while not controller.done():
+            print(f"yellow_line: [UPDATE] vehicle at {agent_vehicle.get_location()}")
+            sleep(5)
 
 finally:
     if agent_vehicle is not None and agent_vehicle.is_alive:

@@ -1,4 +1,5 @@
 import carla
+from time import sleep
 import sys
 from pathlib import Path
 
@@ -38,6 +39,10 @@ try:
 
         controller = DPP_Controller(vehicle, point_b, spawn_points)
         controller.start()
+
+        while not controller.done():
+            print(f"parallel_obstacles: [UPDATE] vehicle at {vehicle.get_location()}")
+            sleep(5)
 
 finally:
     if vehicle is not None and vehicle.is_alive:

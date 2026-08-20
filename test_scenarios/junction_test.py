@@ -3,6 +3,7 @@ Test proper behavior in junctions. Refactored to use ObstacleSpawner.
 """
 
 import carla
+from time import sleep
 import sys
 from pathlib import Path
 
@@ -42,6 +43,10 @@ try:
                          label="junction cross traffic")
 
         controller.start()
+
+        while not controller.done():
+            print(f"junction_test: [UPDATE] vehicle at {agent_vehicle.get_location()}")
+            sleep(5)
 
 finally:
     if agent_vehicle is not None and agent_vehicle.is_alive:

@@ -15,6 +15,7 @@ moving_obs.py instead of this file.
 """
 
 import carla
+from time import sleep
 import os
 import sys
 from pathlib import Path
@@ -73,6 +74,10 @@ try:
             f.write("\n")
 
         controller.start()
+
+        while not controller.done():
+            print(f"moving_obs: [UPDATE] vehicle at {vehicle.get_location()}")
+            sleep(5)
 
 finally:
     if vehicle is not None and vehicle.is_alive:
