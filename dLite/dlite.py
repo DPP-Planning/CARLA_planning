@@ -162,10 +162,12 @@ class DStarLite:
     def _graph_neighbors(self, waypoint, direction):
         resolved_waypoint = self._closest_generated_waypoint(waypoint)
         if resolved_waypoint is None:
+            #print("d: neighbors: resolved_waypoint is None")
             return []
 
         graph_entry = self.waypoint_graph.get(resolved_waypoint.id)
         if graph_entry is None:
+            #print("d: neighbors: graph_entry for resolved_waypoint is None")
             return []
 
         neighbors = []
@@ -173,6 +175,7 @@ class DStarLite:
             neighbor = self.waypoint_lookup.get(neighbor_id)
             if neighbor is not None:
                 neighbors.append(neighbor)
+        #print(f"d: neighbors: {neighbors}")
         return neighbors
 
     def _waypoint_ids(self, waypoints, unique=False):
@@ -264,20 +267,21 @@ class DStarLite:
 
         print(f"Saved D* Lite visualization data to {output_path}")
         return output_path
-        
+
     def successors(self,waypoint):
         neighbors = self._graph_neighbors(waypoint, "successors")
         if waypoint.transform.location.distance(self.goal.transform.location) < self.resolution + .5:
             neighbors.append(self.goal)
         return neighbors
-    
+
     def predecessors(self, waypoint):
         neighbors = self._graph_neighbors(waypoint, "predecessors")
         if waypoint.transform.location.distance(self.start.transform.location) < self.resolution + 0.5:
             neighbors.append(self.start)
         return neighbors
-    
+
     def add_obst_loc_to_obst_wp(self, location):
+        #print("[DLite] Adding obstacle at {location} to obst_wps")
         wp = self.map.get_waypoint(location)
         gen_wp = self._closest_generated_waypoint(wp)
         if gen_wp is None:
@@ -285,17 +289,17 @@ class DStarLite:
         self.all_obst_wps[gen_wp.id] = gen_wp
         self.new_obst_wps[gen_wp.id] = gen_wp
         self.perception_state.mark_obstacle(gen_wp)
+        #print(f"[DLite] Added gen_wp at {gen_wp.transform.location} to obst_wps")
         return gen_wp
 
-    
     def heuristic(self, waypoint1, waypoint2):
         return waypoint1.transform.location.distance(waypoint2.transform.location)
-    
+
     def heuristic_c(self, waypoint1, waypoint2):
         if waypoint1.id in self.all_obst_wps or waypoint2.id in self.all_obst_wps:
             return float('inf')
         else:
-            return waypoint1.transform.location.distance(waypoint2.transform.location)        
+            return waypoint1.transform.location.distance(waypoint2.transform.location)
         # if waypoint1.id == 1412984381793799066:
         #     print("\n\n\nthe target of id", waypoint1)
 
@@ -303,7 +307,7 @@ class DStarLite:
         # #     return float('inf')
         # # else:
         # #     return waypoint1.transform.location.distance(waypoint2.transform.location)
-        
+
     def contain(self, u):
         return any(item == u for item in self.U.vertices_in_heap)
     
@@ -339,7 +343,7 @@ class DStarLite:
         pred_list = self.predecessors(self.goal)
 
         print(f'pred_list {pred_list}')
-        print(f'pred 1 {pred_list[0]}')
+        # print(f'pred 1 {pred_list[0]}')
 
     def update_vertex(self, u):
         if self.g[u.id] != self.rhs[u.id] and self.contain(u):
@@ -363,7 +367,7 @@ class DStarLite:
                 self.U.remove(u)
                 for s in self.predecessors(u):
                     self.path.append(s)
-                    if s != self.goal:  
+                    if s != self.goal:
                         self.rhs[s.id] = min(self.rhs[s.id], self.heuristic_c(s, u) + self.g[u.id])
                     self.update_vertex(s)
             else:
@@ -371,13 +375,13 @@ class DStarLite:
                 self.g[u.id] = float('inf')
                 pred = self.predecessors(u)
                 pred.append(u)
-                for s in pred:   
+                for s in pred:
                     self.path.append(s)
                     if self.rhs[s.id] == self.heuristic_c(s, u) + self.g_old:
-                        print('locally consistent!')
+                        #print('locally consistent!')
                         if s != self.goal:
                             min_s = float('inf')
-                            print('pred:', pred)
+                            #print('pred:', pred)
                             succ = self.successors(s)
                             for s_ in succ:
                                 temp = self.heuristic_c(s, s_) + self.g[s_.id]
@@ -385,7 +389,6 @@ class DStarLite:
                                     min_s = temp
                             self.rhs[s.id] = min_s
                     self.update_vertex(s)
-
     def obs_signal(self,location):
         self.new_obst+=1
         self.add_obst_loc_to_obst_wp(location)
@@ -408,7 +411,7 @@ class DStarLite:
         has_demo_obstacles = len(self.all_waypoints) > max(demo_obstacle_indices)
         self.compute_shortest_path()
         self.record_policy_route("initial", start_waypoint=self.s_current, obstacles=[])
-        
+
         print(f'self.s_current before while{self.s_current}')
         while self.s_current.transform.location.distance(self.goal.transform.location) >= 3.5:
             if self.rhs[self.start.id] == float('inf'):
@@ -485,7 +488,6 @@ class DStarLite:
                                 for s_ in self.successors(u):
                                     temp = self.heuristic_c(u, s_) + self.g[s_.id]
                                     if temp < min_s:
-                                        min_s = temp
                                         arg_min = s_
                                 self.rhs[u.id] = min_s
                                 print('\n\n\n\n\n\n\nworked2')
@@ -499,6 +501,7 @@ class DStarLite:
                     obstacles=new_obstacle_ids,
                     store=False,
                 )
+
                 reroute_record["step"] = len(path) - 1
                 reroute_record["current"] = self.s_current.id
                 reroute_record["trigger_obstacles"] = new_obstacle_ids
@@ -542,7 +545,10 @@ class ThreadedDStarLite:
         self._stop_event.clear()
         self._needs_replan.set()
         self._planner_thread = threading.Thread(target=self._planner_loop, name="DStarPlannerThread", daemon=True)
+        #self._planner_thread = threading.Thread(target=self._planner_loop_2, name="DStarPlannerThread", daemon=True)
         self._planner_thread.start()
+
+        self._dstar.s_last = self._dstar.start
 
     def stop(self, join_timeout=1.0):
         self._stop_event.set()
@@ -550,6 +556,8 @@ class ThreadedDStarLite:
             self._planner_thread.join(timeout=join_timeout)
 
     def signal_obstacle(self, location):
+        #print("[ThreadedDStarLite] signaling obstacle")
+
         with self._lock:
             try:
                 obstacle_waypoint = self._dstar.add_obst_loc_to_obst_wp(location)
@@ -558,7 +566,10 @@ class ThreadedDStarLite:
             except Exception as e:
                 print("[ThreadedDStarLite] signal_obstacle() error:", e)
 
+        #print("[ThreadedDStarLite] obstacle signaled")
+
     def request_replan(self):
+        print("[ThreadedDStarLite] Replan requested.")
         self._needs_replan.set()
 
     def get_waypoint_snapshot(self):
@@ -568,12 +579,13 @@ class ThreadedDStarLite:
     def get_best_successor(self, current_waypoint, prefer_lowest_g=True):
         if current_waypoint is None:
             return None
-
         with self._lock:
             try:
                 succs = self._dstar.successors(current_waypoint)
             except Exception as e:
+                #print(f"d: exception in successors(), {e}")
                 succs = []
+            #print(f"d: succs: {succs}")
             best = None
             best_cost = float('inf')
             for s in succs:
@@ -587,9 +599,15 @@ class ThreadedDStarLite:
                 except Exception:
                     h = self._dstar.heuristic(current_waypoint, s)
                 cost = h + g_s
+                # Check if successors are consistent
+                #rhs = self._dstar.rhs[s.id]
+                #self._dstar.world.debug.draw_string(s.transform.location, f"O > {rhs if rhs != float('inf') else 'inf'}", life_time=1.0, color=carla.Color(r=0, g=0, b=255))
+                #self._dstar.world.debug.draw_string(s.transform.location, f"O > {rhs == g_s}", life_time=1.0, color=carla.Color(r=0, g=0, b=255))
                 if cost < best_cost:
                     best_cost = cost
                     best = s
+
+            #print(f"d: best: {best}")
             return best
 
     # --- Internal planner thread ---------------------------------------
@@ -598,16 +616,27 @@ class ThreadedDStarLite:
         """Background loop that recomputes compute_shortest_path when needed and updates snapshot."""
         print("[ThreadedDStarLite] Planner thread started.")
         while not self._stop_event.is_set():
+            self._dstar.start = self._dstar._closest_generated_waypoint(
+              self._dstar.map.get_waypoint(
+                self._dstar.vehicle.get_location()
+              )
+            )
+
             if not self._needs_replan.is_set():
                 time.sleep(self.replan_interval)
                 continue
+
             if self._needs_replan.is_set():
                 self._needs_replan.clear()
                 self._planner_idle.clear()
+
                 try:
-                    self._dstar.compute_shortest_path()
                     trigger_obstacles = sorted(self._dstar.new_obst_wps.keys())
+
                     if trigger_obstacles:
+                        self._dstar.km = self._dstar.km + self._dstar.heuristic(self._dstar.s_last, self._dstar.start)
+                        self._dstar.s_last = self._dstar.start
+
                         self._dstar.obstacle_events.append(
                             {
                                 "step": len(self._dstar.actual_route),
@@ -626,6 +655,11 @@ class ThreadedDStarLite:
                         self._dstar.reroute_events.append(route_record)
                     elif not self._dstar.policy_routes:
                         self._dstar.record_policy_route("threaded initial", start_waypoint=self._dstar.s_current)
+
+                    with self._lock:
+                        self._cost_update()
+                        self._dstar.compute_shortest_path()
+
                     self._dstar.new_obst_wps = {}
                     self._dstar.new_obst = 0
                     self._dstar.perception_state.clear_obstacle_blocking()
@@ -638,6 +672,28 @@ class ThreadedDStarLite:
                         print("[ThreadedDStarLite] _build_waypoint_index() error:", e)
                 self._planner_idle.set()
         print("[ThreadedDStarLite] Planner thread exiting.")
+
+    def _cost_update(self):
+            for v in self._dstar.new_obst_wps.values():
+                self._dstar.rhs[v.id] = float('inf')
+                for u in self._dstar.predecessors(v):
+                    c_old = self._dstar.heuristic(u, v)
+                    if c_old > self._dstar.heuristic_c(u, v):
+                        self._dstar.rhs[u.id] = min(
+                            self._dstar.rhs[u.id],
+                            self._dstar.heuristic_c(u, v) + self._dstar.g[v.id]
+                        )
+                    elif self._dstar.rhs[u.id] == c_old + self._dstar.g[v.id]:
+                        argmin = None
+                        min_s = float('inf')
+                        for w in self._dstar.successors(u):
+                            temp = self._dstar.heuristic_c(w, u) + self._dstar.g[w.id]
+                            if temp < min_s:
+                                min_s = temp
+                                argmin = w
+                        self._dstar.rhs[u.id] = min_s
+
+                    self._dstar.update_vertex(u)
 
     def wait_until_idle(self, timeout=None):
         return self._planner_idle.wait(timeout=timeout)
