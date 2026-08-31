@@ -89,6 +89,9 @@ class BasicAgentD(BasicAgent):
         self._vehicle_controller = None
         self._q_max = 10
         self._queue = deque()
+
+        self._freeze_queue = False
+
         self._search = None
 
     def init_controller(self):
@@ -122,7 +125,7 @@ class BasicAgentD(BasicAgent):
 
         vehicle_speed = get_speed(self._vehicle) / 5
 
-        if len(self._queue) < self._q_max:
+        if len(self._queue) < self._q_max and not self._freeze_queue:
             self._get_next_waypoints()
             if len(self._queue) == 0:
                 control = carla.VehicleControl()
@@ -139,12 +142,16 @@ class BasicAgentD(BasicAgent):
         plan_waypoints = [wp for wp in self._queue]
         path_blocked_by_bbox = False
         blocking_candidates = []
-        blocked_wps = set()
-        obstacle_min_berth = self._vehicle.bounding_box.extent.x * 4
+        obstacle_min_berth = self._vehicle.bounding_box.extent.x * 5
 
         snapshot = self._get_seen_obstacles_snapshot()
 
         for obs_data in snapshot:
+            velocity = obs_data['velocity']
+
+            if abs(velocity.x) >= vehicle_speed  or abs(velocity.y) >= vehicle_speed:
+                continue
+
             actor = obs_data['actor']
             if not actor.is_alive:
                 continue
@@ -182,7 +189,15 @@ class BasicAgentD(BasicAgent):
             control = self.add_emergency_stop(control)
         elif hazard_obstacle:
             if mp_debug: print("mp (basic_agent): hazard detected")
-            adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(blocking_candidates[0])
+            #adjacent_lane_blocked = self._adjacent_lane_waypoints_blocked(blocking_candidates[0])
+
+            adjacent_lane_blocked = False
+            for b in blocking_candidates:
+                if self._adjacent_lane_waypoints_blocked(b):
+                    adjacent_lane_blocked = True
+                    break
+
+            #print(f"ALB: {adjacent_lane_blocked}")
 
             if blocking_candidates and adjacent_lane_blocked:
 
@@ -198,12 +213,9 @@ class BasicAgentD(BasicAgent):
                 # 1. Send obstacles and a replan request to D*
                 # 2. Clear queued waypoints.
 
-                for candidate in blocking_candidates:
-                    if mp_debug: print(f"mp (basic_agent): signalling obstacle {candidate.id}")
-                    self._search.signal_obstacle(candidate.transform.location)
+                for candidate in blocking_candidates: self._search.signal_obstacle(candidate.transform.location)
 
                 self._previous_obstacle = set([w.id for w in blocking_candidates])
-
                 self._queue.clear()
 
                 for candidate in blocking_candidates:
@@ -223,10 +235,6 @@ class BasicAgentD(BasicAgent):
         control.steer = 0.0
         control.brake = 1.0
         self._vehicle.apply_control(control)
-
-    def done(self):
-         # TODO: establish termination conditions for mp
-         return False
 
     # --- Private Methods --- #
 
