@@ -356,7 +356,6 @@ class DStarLite:
     def compute_shortest_path(self):
         while (self.U.top_key() < self.calculate_key(self.start)) or (self.rhs[self.start.id] > self.g[self.start.id]):
             u = self.U.top()
-
             k_old = self.U.top_key()
             k_new = self.calculate_key(u)
 
@@ -568,6 +567,46 @@ class ThreadedDStarLite:
 
         #print("[ThreadedDStarLite] obstacle signaled")
 
+    def signal_cleared(self, location):
+        """
+        Restore rhs value to a waypoint and remove it from the obstacle dictionary.
+        Inverse operation of signal_obstacle.
+        """
+
+        with self._lock:
+            try:
+                gen_wp = self._dstar._closest_generated_waypoint(self._dstar.map.get_waypoint(location))
+                if gen_wp.id in self._dstar.all_obst_wps.keys(): del self._dstar.all_obst_wps[gen_wp.id]
+                if gen_wp.id in self._dstar.new_obst_wps.keys(): del self._dstar.new_obst_wps[gen_wp.id]
+
+                # Correct obstacle successor cost
+                min_s = float('inf')
+                for s in self._dstar.successors(gen_wp):
+                    temp = self._dstar.heuristic_c(gen_wp, s) + self._dstar.g[s.id]
+                    if temp < min_s: min_s = temp
+
+                self._dstar.rhs[gen_wp.id] = min_s
+                self._dstar.update_vertex(gen_wp)
+
+                # Correct obstacle predecessor costs
+                for p in self._dstar.predecessors(gen_wp):
+                    min_s = float('inf')
+                    for p_s in self._dstar.successors(p):
+                        temp = self._dstar.heuristic_c(p, p_s) + self._dstar.g[p_s.id]
+                        if temp < min_s: min_s = temp
+
+                    self._dstar.rhs[p.id] = min_s
+                    self._dstar.update_vertex(p)
+
+                self._dstar.compute_shortest_path()
+                self._build_waypoint_index()
+
+            except Exception as e:
+                print("ThreadedDStarLite] signal_cleared() error:", e)
+
+    def signal_cluster(self, location, cluster):
+        pass
+
     def request_replan(self):
         print("[ThreadedDStarLite] Replan requested.")
         self._needs_replan.set()
@@ -600,9 +639,6 @@ class ThreadedDStarLite:
                     h = self._dstar.heuristic(current_waypoint, s)
                 cost = h + g_s
                 # Check if successors are consistent
-                #rhs = self._dstar.rhs[s.id]
-                #self._dstar.world.debug.draw_string(s.transform.location, f"O > {rhs if rhs != float('inf') else 'inf'}", life_time=1.0, color=carla.Color(r=0, g=0, b=255))
-                #self._dstar.world.debug.draw_string(s.transform.location, f"O > {rhs == g_s}", life_time=1.0, color=carla.Color(r=0, g=0, b=255))
                 if cost < best_cost:
                     best_cost = cost
                     best = s
@@ -661,7 +697,7 @@ class ThreadedDStarLite:
                         self._dstar.record_policy_route("threaded initial", start_waypoint=self._dstar.s_current)
 
                     with self._lock:
-                        self._cost_update()
+                        self._cost_update_new_obstacles()
                         self._dstar.compute_shortest_path()
 
                     self._dstar.new_obst_wps = {}
@@ -677,7 +713,7 @@ class ThreadedDStarLite:
                 self._planner_idle.set()
         print("[ThreadedDStarLite] Planner thread exiting.")
 
-    def _cost_update(self):
+    def _cost_update_new_obstacles(self):
             for v in self._dstar.new_obst_wps.values():
                 self._dstar.rhs[v.id] = float('inf')
                 for u in self._dstar.predecessors(v):
