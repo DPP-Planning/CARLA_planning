@@ -132,7 +132,7 @@ class BasicAgentD(BasicAgent):
 
             if self._blockers.get(local_wpt.id):
                 for x in self._blockers[local_wpt.id]:
-                    self._world.debug.draw_string(x.transform.location, "Cleared", color=carla.Color(g=255,r=0,b=0), life_time=5.0)
+                    #self._world.debug.draw_string(x.transform.location, "Cleared", color=carla.Color(g=255,r=0,b=0), life_time=5.0)
                     self._search.signal_cleared(x.transform.location)
 
                 del self._blockers[local_wpt.id]
@@ -151,7 +151,6 @@ class BasicAgentD(BasicAgent):
             self._get_next_waypoints()
 
         if len(self._queue) == 0:
-            if mp_debug: print("mp (basic_agent): stopping vehicle on accont of empty queue")
             control = carla.VehicleControl()
             self.add_emergency_stop(control)
             return control

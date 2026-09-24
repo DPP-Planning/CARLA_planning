@@ -99,6 +99,7 @@ class DStarLite:
         # self.crnt_rhs = {}
         self.all_obst_wps = {} # dict of all obstacle waypoints ever encountered
         self.new_obst_wps = {} # dict of obstacle waypoints just found, resets after each scan
+        self.cleared_obst_wps = {}
         self.new_obst = 0
         print('init successfully')
         self.new_edges_and_old_costs = None
@@ -579,27 +580,32 @@ class ThreadedDStarLite:
                 if gen_wp.id in self._dstar.all_obst_wps.keys(): del self._dstar.all_obst_wps[gen_wp.id]
                 if gen_wp.id in self._dstar.new_obst_wps.keys(): del self._dstar.new_obst_wps[gen_wp.id]
 
-                # Correct obstacle successor cost
-                min_s = float('inf')
-                for s in self._dstar.successors(gen_wp):
-                    temp = self._dstar.heuristic_c(gen_wp, s) + self._dstar.g[s.id]
-                    if temp < min_s: min_s = temp
+                self._dstar.cleared_obst_wps[gen_wp.id] = gen_wp
 
-                self._dstar.rhs[gen_wp.id] = min_s
-                self._dstar.update_vertex(gen_wp)
+                self._needs_replan.set()
+
+                # Correct obstacle successor cost
+                #min_s = float('inf')
+                #for s in self._dstar.successors(gen_wp):
+                #    temp = self._dstar.heuristic_c(gen_wp, s) + self._dstar.g[s.id]
+                #    if temp < min_s: min_s = temp
+
+                #self._dstar.rhs[gen_wp.id] = min_s
+                #self._dstar.update_vertex(gen_wp)
 
                 # Correct obstacle predecessor costs
-                for p in self._dstar.predecessors(gen_wp):
-                    min_s = float('inf')
-                    for p_s in self._dstar.successors(p):
-                        temp = self._dstar.heuristic_c(p, p_s) + self._dstar.g[p_s.id]
-                        if temp < min_s: min_s = temp
+                #for p in self._dstar.predecessors(gen_wp):
+                #    min_s = float('inf')
+                #    for p_s in self._dstar.successors(p):
+                #        temp = self._dstar.heuristic_c(p, p_s) + self._dstar.g[p_s.id]
+                #        if temp < min_s: min_s = temp
 
-                    self._dstar.rhs[p.id] = min_s
-                    self._dstar.update_vertex(p)
+                #    self._dstar.rhs[p.id] = min_s
+                #    self._dstar.update_vertex(p)
 
-                self._dstar.compute_shortest_path()
-                self._build_waypoint_index()
+
+                #self._dstar.compute_shortest_path()
+                #self._build_waypoint_index()
 
             except Exception as e:
                 print("ThreadedDStarLite] signal_cleared() error:", e)
@@ -672,6 +678,7 @@ class ThreadedDStarLite:
 
                 try:
                     trigger_obstacles = sorted(self._dstar.new_obst_wps.keys())
+                    trigger_cleared = sorted(self._dstar.cleared_obst_wps.keys())
 
                     if trigger_obstacles:
                         self._dstar.km = self._dstar.km + self._dstar.heuristic(self._dstar.s_last, self._dstar.start)
@@ -697,10 +704,12 @@ class ThreadedDStarLite:
                         self._dstar.record_policy_route("threaded initial", start_waypoint=self._dstar.s_current)
 
                     with self._lock:
-                        self._cost_update_new_obstacles()
+                        self._cost_update_obstacles()
+                        self._cost_update_cleared()
                         self._dstar.compute_shortest_path()
 
                     self._dstar.new_obst_wps = {}
+                    self._dstar.cleared_obst_wps = {}
                     self._dstar.new_obst = 0
                     self._dstar.perception_state.clear_obstacle_blocking()
                 except Exception as e:
@@ -713,7 +722,7 @@ class ThreadedDStarLite:
                 self._planner_idle.set()
         print("[ThreadedDStarLite] Planner thread exiting.")
 
-    def _cost_update_new_obstacles(self):
+    def _cost_update_obstacles(self):
             for v in self._dstar.new_obst_wps.values():
                 self._dstar.rhs[v.id] = float('inf')
                 for u in self._dstar.predecessors(v):
@@ -734,6 +743,28 @@ class ThreadedDStarLite:
                         self._dstar.rhs[u.id] = min_s
 
                     self._dstar.update_vertex(u)
+
+    def _cost_update_cleared(self):
+            for gen_wp in self._dstar.cleared_obst_wps.values():
+                # Correct obstacle successor cost
+                min_s = float('inf')
+                for s in self._dstar.successors(gen_wp):
+                    temp = self._dstar.heuristic_c(gen_wp, s) + self._dstar.g[s.id]
+                    if temp < min_s: min_s = temp
+
+                self._dstar.rhs[gen_wp.id] = min_s
+                self._dstar.update_vertex(gen_wp)
+
+                # Correct obstacle predecessor costs
+                for p in self._dstar.predecessors(gen_wp):
+                    min_s = float('inf')
+                    for p_s in self._dstar.successors(p):
+                        temp = self._dstar.heuristic_c(p, p_s) + self._dstar.g[p_s.id]
+                        if temp < min_s: min_s = temp
+
+                    self._dstar.rhs[p.id] = min_s
+                    self._dstar.update_vertex(p)
+
 
     def wait_until_idle(self, timeout=None):
         return self._planner_idle.wait(timeout=timeout)
