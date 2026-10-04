@@ -6,20 +6,15 @@ actor cleanup are gone, replaced by declared obstacle types and a context
 manager.
 """
 
+from scenario_config import create_carla_client
 import carla
 from time import sleep
-import sys
-from pathlib import Path
-
-sys.path.append('../')
-sys.path.append(str(Path(__file__).resolve().parents[1] / "grp planning"))
 from agents.navigation.global_route_planner import GlobalRoutePlanner
-from agents.navigation.d_agent import DPP_Controller
+from d_agent import DPP_Controller
 from obstacle_spawner import ObstacleSpawner, ObstacleType
 import random
 
-client = carla.Client("localhost", 9000)  # matches original lane_change.py's port
-client.set_timeout(10)
+client = create_carla_client(carla, 9000)  # matches original lane_change.py's port
 world = client.get_world()
 amap = world.get_map()
 

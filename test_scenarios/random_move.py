@@ -1,10 +1,6 @@
+from scenario_config import create_carla_client
 import carla
 from time import sleep
-import sys
-from pathlib import Path
-
-sys.path.append('../')
-sys.path.append(str(Path(__file__).resolve().parents[1] / "grp planning"))
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 import random
 from d_agent import DPP_Controller
@@ -13,8 +9,7 @@ from d_agent import DPP_Controller
 
 import random
 
-client = carla.Client("localhost", 9000)
-client.set_timeout(10)
+client = create_carla_client(carla, 9000)
 world = client.get_world()
 amap = world.get_map()
 

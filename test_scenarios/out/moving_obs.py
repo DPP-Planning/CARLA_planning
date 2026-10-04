@@ -14,21 +14,20 @@ isolate a specific static-obstacle bug), keep using the old
 moving_obs.py instead of this file.
 """
 
-import carla
 from time import sleep
 import os
 import sys
 from pathlib import Path
 
-sys.path.append('../')
-sys.path.append(str(Path(__file__).resolve().parents[1] / "grp planning"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scenario_config import create_carla_client
+import carla
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 from d_agent import DPP_Controller
 from obstacle_spawner import ObstacleSpawner, ObstacleType
 import random
 
-client = carla.Client("localhost", 9000)
-client.set_timeout(10)
+client = create_carla_client(carla, 9000)
 world = client.get_world()
 amap = world.get_map()
 
