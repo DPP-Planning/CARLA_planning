@@ -1,6 +1,7 @@
 import sys
 sys.path.insert(0, "/home/ubuntu/persistent/CARLA_LATEST/PythonAPI/carla")
 from scenic.core.simulators import Action
+from scenic.domains.driving.actions import SetThrottleAction, SetSteerAction, SetBrakeAction
 from agents.navigation.d_agent import DPP_Controller
 import carla
 import time
@@ -23,13 +24,12 @@ behavior DPP_Behavior(goal, timeout=15):
         search_algorithm="dlite"
     )
 
-    controller.start()
+    controller._debug = False
+    controller.start()   
 
-    while not controller.done() and t <= timeout:
-        t += 1
-        take EmptyAction()
-
-        #print(distance from goal)
-        time.sleep(1)
+    while (distance from goal > 3.5):
+        print(distance from goal)
+        control = controller._agent.run_step()
+        take SetThrottleAction(control.throttle), SetSteerAction(control.steer // 2), SetBrakeAction(control.brake)
 
     terminate 
