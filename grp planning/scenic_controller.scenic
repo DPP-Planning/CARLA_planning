@@ -14,6 +14,7 @@ class EmptyAction(Action):
         pass
 
 behavior DPP_Behavior(goal, timeout=15):
+
     g = goal.position.coordinates
     t = 0    
 
@@ -27,9 +28,9 @@ behavior DPP_Behavior(goal, timeout=15):
     controller._debug = False
     controller.start()   
 
-    while (distance from goal > 3.5):
+    while not controller.done():
         print(distance from goal)
-        control = controller._agent.run_step()
-        take SetThrottleAction(control.throttle), SetSteerAction(control.steer // 2), SetBrakeAction(control.brake)
-
+        #control = controller._agent.run_step()
+        #take SetThrottleAction(control.throttle), SetSteerAction(control.steer), SetBrakeAction(control.brake)
+        take EmptyAction()
     terminate 
