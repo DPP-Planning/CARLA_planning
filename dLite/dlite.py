@@ -112,6 +112,8 @@ class DStarLite:
         self.waypoint_lookup = waypoint_lookup or {waypoint.id: waypoint for waypoint in all_waypoints}
         self.perception_state = PerceptionState()
         self._waypoint_spatial_index = self._build_waypoint_spatial_index()
+        
+        self.nodes_expanded = 0
 
     def _location_key(self, location, bucket_size=None):
         bucket_size = bucket_size or self.resolution
@@ -162,6 +164,7 @@ class DStarLite:
 
     def _graph_neighbors(self, waypoint, direction):
         resolved_waypoint = self._closest_generated_waypoint(waypoint)
+        self.nodes_expanded += 1
         if resolved_waypoint is None:
             #print("d: neighbors: resolved_waypoint is None")
             return []
@@ -322,6 +325,9 @@ class DStarLite:
             )
 
     def initialize(self):
+        self.start = self._closest_generated_waypoint(self.start)
+        self.goal = self._closest_generated_waypoint(self.goal)
+
         self.U = PriorityQueue()
         self.km = 0
         for s in self.all_waypoints:
@@ -333,13 +339,14 @@ class DStarLite:
         self.rhs[self.start.id] = float('inf')
 
         self.U.insert(self.goal,  Priority(self.heuristic(self.start, self.goal), 0))
-        
+
         print(f'self.goal {self.goal}') # wp
         print(f'self.U {self.U.top_key()}') # Priority(g, rhs)
         print(f'self.U {self.U.heap}') # [priorityNode]
         print(f'self.U {self.U.vertices_in_heap}') # [wp]
         print(f'goal calculate_key {self.calculate_key(self.goal).k1}') 
 
+        self.world.debug.draw_string(self.start.transform.location, 'start', draw_shadow=False, color=carla.Color(r=0, g=110, b=220), life_time=60.0, persistent_lines=True)
         self.world.debug.draw_string(self.goal.transform.location, 'goal', draw_shadow=False, color=carla.Color(r=110, g=0, b=220), life_time=60.0, persistent_lines=True)
         pred_list = self.predecessors(self.goal)
 
@@ -389,6 +396,7 @@ class DStarLite:
                                     min_s = temp
                             self.rhs[s.id] = min_s
                     self.update_vertex(s)
+
     def obs_signal(self,location):
         self.new_obst+=1
         self.add_obst_loc_to_obst_wp(location)
@@ -530,6 +538,8 @@ class ThreadedDStarLite:
         #     "Use get_best_successor() from main thread to move the vehicle."
         # )
 
+        self.wp_getter = None
+
     # --- Public API -----------------------------------------------------
 
     def start(self):
@@ -622,17 +632,20 @@ class ThreadedDStarLite:
             return deepcopy(self._waypoint_index)
 
     def get_best_successor(self, current_waypoint, prefer_lowest_g=True):
+        current_waypoint = self._dstar._closest_generated_waypoint(current_waypoint)
+
         if current_waypoint is None:
             return None
         with self._lock:
             try:
                 succs = self._dstar.successors(current_waypoint)
             except Exception as e:
-                #print(f"d: exception in successors(), {e}")
+                print(f"d: exception in successors(), {e}")
                 succs = []
-            #print(f"d: succs: {succs}")
+            #print(f"d: succs: {len(succs)}")
             best = None
             best_cost = float('inf')
+
             for s in succs:
                 sid = s.id
                 entry = self._waypoint_index.get(sid)
@@ -649,7 +662,10 @@ class ThreadedDStarLite:
                     best_cost = cost
                     best = s
 
+            if len(succs) == 1: best = succs[0]
+
             #print(f"d: best: {best}")
+
             return best
 
     # --- Internal planner thread ---------------------------------------

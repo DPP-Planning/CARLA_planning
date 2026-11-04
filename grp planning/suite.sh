@@ -14,8 +14,6 @@ do
 done
 
 
-scenic agents/navigation/scenic_test_A.scenic -b --count ${runs} --param timeout ${timeout} --param noise ${noise} --simulate --2d --model scenic.simulators.carla.model
+scenic agents/navigation/scenic_test_0.scenic -b --count ${runs} --param timeout ${timeout} --param noise ${noise} --simulate --2d --model scenic.simulators.carla.model
+#scenic agents/navigation/scenic_test_A.scenic -b --count ${runs} --param timeout ${timeout} --param noise ${noise} --simulate --2d --model scenic.simulators.carla.model
 #scenic agents/navigation/scenic_test_B.scenic --count ${runs} --param noise ${noise} --simulate --2d --model scenic.simulators.carla.model
-#scenic agents/navigation/scenic_test.scenic --count ${runs} --simulate --2d --model scenic.simulators.carla.model
-#scenic agents/navigation/scenic_test.scenic --count ${runs} --simulate --2d --model scenic.simulators.carla.model
-#scenic agents/navigation/scenic_test.scenic --count ${runs} --simulate --2d --model scenic.simulators.carla.model
