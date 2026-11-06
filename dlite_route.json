@@ -1,0 +1,40 @@
+{
+    "start": 101,
+    "goal": 205,
+    "actual_route": [101, 102, 202, 203, 204, 205],
+    "planned_routes": [
+      {
+        "label": "initial",
+        "start": 101,
+        "goal": 205,
+        "route": [101, 102, 103, 104, 105],
+        "obstacles": []
+      },
+      {
+        "label": "reroute 1",
+        "start": 102,
+        "goal": 205,
+        "route": [102, 202, 203, 204, 205],
+        "obstacles": [103, 104]
+      }
+    ],
+    "reroutes": [
+      {
+        "label": "reroute 1",
+        "step": 1,
+        "current": 102,
+        "route": [102, 202, 203, 204, 205],
+        "obstacles": [103, 104],
+        "trigger_obstacles": [103, 104]
+      }
+    ],
+    "explored": [101, 102, 103, 104, 105, 202, 203, 204, 205],
+    "obstacles": [103, 104],
+    "obstacle_events": [
+      {
+        "step": 1,
+        "current": 102,
+        "obstacles": [103, 104]
+      }
+    ]
+  }

@@ -4,7 +4,6 @@ import time
 # from queue import PriorityQueue
 from PriorityQueueDLite import PriorityQueue, Priority
 import sys
-import keyboard
 # print(sys.getrecursionlimit())
 sys.setrecursionlimit(50000)
 

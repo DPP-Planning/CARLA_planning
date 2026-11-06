@@ -1,0 +1,69 @@
+waypoint_id: 101
+location: (0.0, 0.0, 0.0)
+g: inf
+rhs: inf
+predecessors: []
+successors: [102]
+
+waypoint_id: 102
+location: (10.0, 0.0, 0.0)
+g: inf
+rhs: inf
+predecessors: [101]
+successors: [103, 202]
+
+waypoint_id: 103
+location: (20.0, 0.0, 0.0)
+g: inf
+rhs: inf
+predecessors: [102]
+successors: [104]
+
+waypoint_id: 104
+location: (30.0, 2.0, 0.0)
+g: inf
+rhs: inf
+predecessors: [103]
+successors: [105]
+
+waypoint_id: 105
+location: (40.0, 6.0, 0.0)
+g: inf
+rhs: inf
+predecessors: [104]
+successors: []
+
+waypoint_id: 201
+location: (0.0, 8.0, 0.0)
+g: inf
+rhs: inf
+predecessors: []
+successors: [202]
+
+waypoint_id: 202
+location: (10.0, 8.0, 0.0)
+g: inf
+rhs: inf
+predecessors: [201, 102]
+successors: [203]
+
+waypoint_id: 203
+location: (20.0, 8.0, 0.0)
+g: inf
+rhs: inf
+predecessors: [202]
+successors: [204]
+
+waypoint_id: 204
+location: (30.0, 10.0, 0.0)
+g: inf
+rhs: inf
+predecessors: [203]
+successors: [205]
+
+waypoint_id: 205
+location: (40.0, 14.0, 0.0)
+g: inf
+rhs: inf
+predecessors: [204]
+successors: []

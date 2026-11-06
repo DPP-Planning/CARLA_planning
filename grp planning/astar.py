@@ -2,7 +2,6 @@ import carla
 import random
 import time
 from queue import PriorityQueue
-import json
 
 obstacles = []
 
@@ -35,21 +34,29 @@ def get_legal_neighbors(waypoint):
         left_lane = waypoint.get_left_lane()
         if left_lane and left_lane.lane_type == carla.LaneType.Driving:
             neighbors.append(left_lane)
+            neighbors.append(left_lane.next(2.0)[0])
     
     # Legal right lane change
     if waypoint.lane_change & carla.LaneChange.Right:
         right_lane = waypoint.get_right_lane()
         if right_lane and right_lane.lane_type == carla.LaneType.Driving:
             neighbors.append(right_lane)
+            neighbors.append(right_lane.next(2.0)[0])
     
     return neighbors
 
-def _near_obstacle(current_waypoint, obstacle_list, min_distance = 4.0):
-   
-    for obstalce in obstacle_list:
-        distance = obstalce.transform.location.distance(
-            current_waypoint.transform.location)
-        if distance < min_distance:
+def _near_obstacle(current_waypoint, seen_obstacles_snapshot, min_distance = 0.2):
+
+    agents_info = seen_obstacles_snapshot or []
+
+    for agent in agents_info:
+        actor = agent['actor']
+
+        if not actor.is_alive:
+            continue
+
+        obs_mesh = agent.get('mesh')
+        if obs_mesh and obs_mesh.contains_waypoint(current_waypoint, radius_m=min_distance):
             return True
 
     return False
@@ -57,32 +64,14 @@ def _near_obstacle(current_waypoint, obstacle_list, min_distance = 4.0):
 def _near_goal(current_waypoint, goal, min_distance = 30.0):
         
     distance = goal.transform.location.distance(
-        current_waypoint.waypoint.transform.location)
+        current_waypoint.transform.location)
     if distance < min_distance:
         return True
 
     return False
 
-def generate_control_path(route, target_speed=10.0):
-    control_path = []
-
-    for wp in route:
-        transform = wp.transform
-        loc = transform.location
-        rot = transform.rotation
-
-        control_point = {
-            "x": loc.x,
-            "y": loc.y,
-            "z": loc.z,
-            "yaw": rot.yaw,        # heading in degrees
-            "speed": target_speed  # can be modified dynamically later
-        }
-        control_path.append(control_point)
-    
-    return control_path
-
-def a_star(start_waypoint, end_waypoint, new_obstacle=None, heuristic_func=euclidean_heuristic, max_distance=5000):
+def a_star(start_waypoint, end_waypoint, world, seen_obstacles_snapshot=None, heuristic_func=euclidean_heuristic, max_distance=5000):
+    global obstacles
     start_node = AStarNode(start_waypoint, 0, heuristic_func(start_waypoint, end_waypoint))
     open_set = PriorityQueue()
     open_set.put((start_node.f_cost, id(start_node), start_node))
@@ -90,18 +79,14 @@ def a_star(start_waypoint, end_waypoint, new_obstacle=None, heuristic_func=eucli
     g_score = {start_waypoint.id: 0}
     f_score = {start_waypoint.id: start_node.f_cost}
     nodes_expanded = 0
-    goal_threshold = 2.0
+    goal_threshold = 4.0
     goal_threshold_increased = goal_threshold * 2.0
-    
-    # recevies obstacle from previous pipeline and adds it to the list
-    if new_obstacle != None and new_obstacle not in obstacles:
-        obstacles.append(new_obstacle)
 
     
     while not open_set.empty():
         current_node = open_set.get()[2]
 
-        if _near_goal(current_node, end_waypoint) and _near_obstacle(current_node.waypoint, obstacles):
+        if _near_goal(current_node.waypoint, end_waypoint) and _near_obstacle(current_node.waypoint, seen_obstacles_snapshot):
             goal_threshold = goal_threshold_increased
             print (goal_threshold)
         
@@ -114,6 +99,19 @@ def a_star(start_waypoint, end_waypoint, new_obstacle=None, heuristic_func=eucli
                 current_node = came_from.get(current_node.waypoint.id)
             # for k, v in f_score.items():
             #     print (k, ",", v)
+
+            # i = 0
+            # for w in list(reversed(path)):
+            #         # print(w[0].transform.location.x, ",",w[0].transform.location.y, w[1])
+            #     if i % 10 == 0:
+            #         world.debug.draw_string(w.transform.location, f'{g_score[w.id]}', draw_shadow=True,
+            #         color=carla.Color(r=255, g=255, b=255), life_time=120.0,
+            #         persistent_lines=True)
+            #     else:
+            #         world.debug.draw_string(w.transform.location, f'{g_score[w.id]}', draw_shadow=True,
+            #         color = carla.Color(r=255, g=255, b=255), life_time=60.0,
+            #         persistent_lines=True)
+            #     i += 1
             return list(reversed(path))
         
         # Unlikely to happen. left here for debugging purposes
@@ -125,7 +123,7 @@ def a_star(start_waypoint, end_waypoint, new_obstacle=None, heuristic_func=eucli
             nodes_expanded += 1
             # world.debug.draw_string(next_waypoint.transform.location, '^', draw_shadow=False, color=carla.Color(r=220, g=0, b=220), life_time=60.0, persistent_lines=True)
             # Add a small cost for lane changes
-            lane_change_cost = 5 if next_waypoint.lane_id != current_node.waypoint.lane_id else 0
+            lane_change_cost = 0  if next_waypoint.lane_id != current_node.waypoint.lane_id else 0
 
             # tentative = g score + heuristic + lane change cost
             # This sum gives us the total cost to reach the next waypoint from the start,
@@ -135,7 +133,7 @@ def a_star(start_waypoint, end_waypoint, new_obstacle=None, heuristic_func=eucli
             tentative_g_score = g_score[current_node.waypoint.id] + euclidean_heuristic(current_node.waypoint, next_waypoint) + lane_change_cost
 
             #Distance to determine how far obstacles are
-            if _near_obstacle(next_waypoint, obstacles, 2.0):
+            if _near_obstacle(next_waypoint, seen_obstacles_snapshot):
                 tentative_g_score = float('inf')
             # If the next waypoint is already in the open set, we can skip it
             # Comparing g_score for the reason above tentative_g_score.
@@ -210,6 +208,8 @@ def main():
         # End of manual waypoint selection
         print(f"Point A wp: {start_waypoint}")
         print(f"Point B wp: {end_waypoint}")
+        
+
 
         # Run A*
         route = a_star(start_waypoint, end_waypoint)
@@ -221,21 +221,6 @@ def main():
             return
 
         print(f"Route found with {len(route)} waypoints")
-
-        # Convert A* route into control-ready path
-        control_path = generate_control_path(route, target_speed=8.0)
-
-        # Example: Publish or send path to motion control module
-        # (Here we just print first few for verification)
-        print("First 5 control points (for motion control):")
-        for p in control_path[:5]:
-            print(p)
-
-        # Optional: Save path to JSON for external use
-
-        with open("astar_control_path.json", "w") as f:
-            json.dump(control_path, f, indent=2)
-        print("Control path saved to astar_control_path.json")
 
         # Keeping for debugging purposes
         # start_time = time.time()

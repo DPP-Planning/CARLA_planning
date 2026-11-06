@@ -12,13 +12,22 @@ Noted here are the locations of the files to be replaced (from grp planning dire
 
 ```Carla/PythonAPI <br />
 ├───carla
+│   ├───astar.py
 │   ├───agents
 │   │   ├───navigation
 │   │   │   └───local_planner.py
 │   │   │    ───global_route_planner.py
 │   │   │    ───basic_agent.py
-│   │   └───astar.py
-│   │    ───simple-vehicle.py
+|   |   |    ───collision.py
+|   |   |    ───controller.py
+|   |   |    ───d_agent.py
+|   |   |    ───Generate_map.py
+│   │   ├───tools
+|   |   |    ───misc.py
+│   │   └───dLite
+│   │   │   └───dlite.py
+│   │   │    ───PriorityQueueDLite.py
+│   │   └───simple-vehicle.py
 ├───examples
 ```
 
