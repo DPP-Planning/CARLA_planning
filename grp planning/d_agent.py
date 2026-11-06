@@ -1,7 +1,3 @@
-import sys
-
-sys.path.insert(0, "/home/ubuntu/persistent/CARLA_LATEST/PythonAPI/carla")
-
 # Use old basic agent
 from agents.navigation.basic_agent import BasicAgent
 from agents.navigation.controller import VehiclePIDController
