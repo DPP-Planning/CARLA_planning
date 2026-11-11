@@ -22,7 +22,6 @@ from Generate_map import gen_map_initial, save_waypoint_graph
 import threading
 from copy import deepcopy
 
-
 class PerceptionState:
     """Thread-safe state shared by perception, D* Lite, and vehicle execution."""
 
@@ -632,8 +631,6 @@ class ThreadedDStarLite:
             return deepcopy(self._waypoint_index)
 
     def get_best_successor(self, current_waypoint, prefer_lowest_g=True):
-        current_waypoint = self._dstar._closest_generated_waypoint(current_waypoint)
-
         if current_waypoint is None:
             return None
         with self._lock:
@@ -646,29 +643,52 @@ class ThreadedDStarLite:
             best = None
             best_cost = float('inf')
 
+            candidates = []
             for s in succs:
                 sid = s.id
                 entry = self._waypoint_index.get(sid)
+
                 if entry is None:
                     continue
+        
                 g_s = entry['g']
+
+                # Fix for inconsistent successors
+                if g_s == float('inf'):
+                    approx = self._approximate_wp_by_index(s)
+                    if approx is not None:
+                        s = approx['waypoint']
+                        sid = s.id
+                        entry = approx
+                        g_s = approx['g']
+
                 try:
-                    h = self._dstar.heuristic_c(current_waypoint, s)
+                   h = self._dstar.heuristic_c(current_waypoint, s)
                 except Exception:
-                    h = self._dstar.heuristic(current_waypoint, s)
+                   h = self._dstar.heuristic(current_waypoint, s)
+
                 cost = h + g_s
-                # Check if successors are consistent
+
                 if cost < best_cost:
                     best_cost = cost
                     best = s
 
-            if len(succs) == 1: best = succs[0]
-
-            #print(f"d: best: {best}")
-
             return best
 
     # --- Internal planner thread ---------------------------------------
+
+    def _approximate_wp_by_index(self, target):
+        """
+        Temporary fix for "inconsistent successor" problem
+        Approximates a waypoint to a waypoint in the shortest path if the waypoint is within resolution distance
+        Addresses problem where successor function returns waypoints unintialized by CSP
+        """
+        candidates = [v for (k, v) in self._waypoint_index.items() if v['g'] != float('inf') and v['waypoint'].transform.location.distance(target.transform.location) < self._dstar.resolution]
+        if len(candidates) > 0:
+            candidates.sort(key=lambda x: x['waypoint'].transform.location.distance(self._dstar.goal.transform.location)) 
+            return candidates[0]
+        
+        return None
 
     def _planner_loop(self):
         """Background loop that recomputes compute_shortest_path when needed and updates snapshot."""
@@ -681,7 +701,7 @@ class ThreadedDStarLite:
             )
 
             if self._dstar.start.transform.location.distance(self._dstar.goal.transform.location) < 3.5:
-                self.stop()
+                self._stop_event.set()
                 continue
 
             if not self._needs_replan.is_set():

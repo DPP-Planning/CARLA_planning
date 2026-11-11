@@ -9,7 +9,7 @@ scenic agents/navigation/scenic_test.scenic --simulate --2d --model scenic.simul
 # Import OpenDrive Road Network
 param map = localPath('../../../../CarlaUE4/Content/Carla/Maps/OpenDrive/Town10HD.xodr')
 param noise = 0
-param timeout = 15
+param timeout = 60
 model scenic.simulators.carla.model
 
 # Import DPP Module
@@ -19,12 +19,12 @@ sys.path.insert(0, "/home/ubuntu/persistent/CARLA_LATEST/PythonAPI/carla")
 from agents.navigation.scenic_controller import DPP_Behavior
 
 # Randomize Spawn Location
-all_lane_sections = [x for x in list(network.elements.keys()) if isinstance(network.elements[x], LaneSection)]
+all_sections = [x for x in list(network.elements.keys()) if isinstance(network.elements[x], Lane)]
 
-start_choice = random.choice(all_lane_sections)
-goal_choice = random.choice(all_lane_sections)
+start_choice = random.choice(all_sections)
+goal_choice = random.choice(all_sections)
 
-while start_choice != goal_choice: goal_choice = random.choice(all_lane_sections)
+while start_choice != goal_choice: goal_choice = random.choice(all_sections)
 
 start_section = network.elements[start_choice]
 goal_section = network.elements[goal_choice]

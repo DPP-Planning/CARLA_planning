@@ -2,7 +2,6 @@ import sys
 
 sys.path.insert(0, "/home/ubuntu/persistent/CARLA_LATEST/PythonAPI/carla")
 
-# Use old basic agent
 from agents.navigation.basic_agent import BasicAgent
 from agents.navigation.controller import VehiclePIDController
 from agents.tools.misc import get_speed
@@ -79,7 +78,7 @@ class BasicAgentD(BasicAgent):
     def __init__(self, vehicle, destination, search, target_speed=20, opt_dict={}, map_inst=None, grp_inst=None, debug=False):
         super().__init__(vehicle, target_speed, opt_dict, map_inst, grp_inst)
 
-        self.current_wp = None
+        self.last_wp = None
 
         self._agent_thread = None
         self._stop_event = threading.Event()
@@ -98,7 +97,8 @@ class BasicAgentD(BasicAgent):
         self._follow_speed_limits = False
 
         self._vehicle_controller = None
-        self._q_max = 50
+        self._q_max = 25
+        self._q_min = 5
         self._queue = deque()
 
         self._debug = debug
@@ -108,7 +108,6 @@ class BasicAgentD(BasicAgent):
         self._set_route = False
         self._destination = destination
         self._search = search
-        self._prev_wp = None
 
     def start(self, start_thread=True):
         self._init_controller()
@@ -130,95 +129,35 @@ class BasicAgentD(BasicAgent):
 
         if self._debug: print("entered run_step")
 
-        old_snap = self._get_seen_obstacles_snapshot()
-        self._tick_seen_obstacles()
-        new_snap = self._get_seen_obstacles_snapshot()
-
-        old_obs_wps = [self._search._dstar._closest_generated_waypoint(self._map.get_waypoint(x['location'])) for x in old_snap]
-        new_obs_wps = [self._search._dstar._closest_generated_waypoint(self._map.get_waypoint(x['location'])) for x in new_snap]
-
-        cleared = [x for x in old_obs_wps if x not in new_obs_wps]
-
-        if self._debug: print(f" - {len(cleared)} obstacles have left perception")
-
-        for c in cleared:
-            local_wpt = self.localize(c)
-
-            if self._blockers.get(local_wpt.id):
-                for x in self._blockers[local_wpt.id]:
-                    self._search.signal_cleared(x.transform.location)
-
-                del self._blockers[local_wpt.id]
-
-        if len(cleared) > 0:
-            self._queue.clear()
-
         hazard_obstacle = False
         hazard_light = False
-
-        vehicle_list = self._world.get_actors().filter("*vehicle*")
-
         vehicle_speed = get_speed(self._vehicle) / 5
 
-        last_wp = self.localize(self.current_wp)
-        self.current_wp = self.localize(self._map.get_waypoint(self._vehicle.get_location()))
+        self._update_obstacles()
 
-        #if current_wp.is_junction and len(self._queue) == 0:
-        #    self._get_junction_route()
+        if self.last_wp is None:
+            self.last_wp = self.localize(self._map.get_waypoint(self._vehicle.get_location()))
 
-        if self.current_wp.is_junction:
-            #if last_wp is None or last_wp.is_junction:
-                #if not last_wp.is_junction:
-            if not self._set_route: self._get_junction_route()
-
-            if len(self._queue) == 0:
-                #self._world.debug.draw_string(self._vehicle.get_location(), "EMPTY QUEUE")
-                control = carla.VehicleControl()
-                self.add_emergency_stop(control)
-                return control
-
-            self._set_route = True
-
-            #target_wp = self._queue.popleft()
-            target_wp = self._queue[0]
-
-            target_distance = self._vehicle.get_location().distance(target_wp.transform.location)
-
-            if target_distance < self._sampling_radius:
-                self._queue.popleft()
-
-            control = self._vehicle_controller.run_step(
-                self._target_speed,
-                target_wp
-            )
-
-            return control
-
-        else:
-            self._set_route = False
-            if len(self._queue) <= self._q_max // 2: self._get_next_waypoints()
-
-        #if len(self._queue) <= self._q_max // 2:
-        #    self._get_next_waypoints()
+        if len(self._queue) <= self._q_max // 2:
+            self._get_next_waypoints()
 
         if len(self._queue) == 0:
-            #self._world.debug.draw_string(self._vehicle.get_location(), "EMPTY QUEUE")
             if self._debug: print(" - could not get waypoints from GNW, returning empty control")
             control = carla.VehicleControl()
             self.add_emergency_stop(control)
             return control
 
-        #target_wp = self._queue.popleft()
         target_wp = self._queue[0]
-        #target_distance = self._vehicle.get_location().distance(target_wp.transform.location)
+        target_distance = self._vehicle.get_location().distance(target_wp.transform.location)
 
         control = self._vehicle_controller.run_step(
             self._target_speed,
             target_wp
         )
 
-        #if target_distance < self._sampling_radius:
-        self._queue.popleft()
+        if target_distance < self._sampling_radius:
+            self.last_wp = target_wp
+            self._queue.popleft()
 
         min_vehicle_distance = 25
         ego_location = self._vehicle.get_location()
@@ -343,6 +282,10 @@ class BasicAgentD(BasicAgent):
     # --- Private Methods --- #
 
     def _init_controller(self):
+        """
+        Initalizes the vehicle controller
+        """
+
         self._vehicle_controller = VehiclePIDController(self._vehicle,
                                                         args_lateral=self._args_lateral_dict,
                                                         args_longitudinal=self._args_longitudinal_dict,
@@ -352,12 +295,23 @@ class BasicAgentD(BasicAgent):
                                                         max_steering=self._max_steer)
 
     def _agent_loop(self):
+        """
+        Thread function for the motion planner agent.
+        """
+
         print("mp: motion planner started")
 
-        while self._vehicle.get_location().distance(self._destination) > 3.5:
+        distance_from_goal = self._vehicle.get_location().distance(self._destination)
+
+        while distance_from_goal > 3.5:
+
+            distance_from_goal = self._vehicle.get_location().distance(self._destination)
+            # print(distance_from_goal)
 
             if not self._vehicle.is_alive:
+                print("mp: agent vehicle died unexpectedly")
                 break
+    
             else:
                 control_signal = self.run_step()
                 self._vehicle.apply_control(control_signal)
@@ -371,14 +325,14 @@ class BasicAgentD(BasicAgent):
         Keep getting current best route successors until the queue is full.
         """
 
-        #self._queue.clear()
-
         if self._search._needs_replan.is_set():
             if self._debug: print(" - exiting GWP: search is still planning.")
             return
 
-        current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
-        visited = {current_waypoint.id}
+        current_waypoint = self._queue[-1] if len(self._queue) > 0 else self.last_wp
+
+        visited = {wp.id for wp in self._queue}
+        visited.add(current_waypoint.id)
 
         i = 0
 
@@ -394,43 +348,21 @@ class BasicAgentD(BasicAgent):
 
             self._queue.append(succ)
 
-            self._world.debug.draw_string(succ.transform.location, "*", color=carla.Color(r=0, g=255, b=0), life_time=0.0)
+            #self._world.debug.draw_string(succ.transform.location, "*", color=carla.Color(r=0, g=255, b=0), life_time=1.0)
 
             visited.add(succ.id)
             current_waypoint = succ
             i += 1
+
         if self._debug: print(f" - GWP finished after queueing {i} waypoints")
 
-    def _get_junction_route(self):
-        self._queue.clear()
-        #current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
-        current_waypoint = self.current_wp
-        visited = {current_waypoint.id}
-
-        i = 0
-
-        while current_waypoint.is_junction:
-            succ = self._search.get_best_successor(current_waypoint)
-
-            if succ is None:
-                break
-
-            if succ.id in visited:
-                break
-
-            self._queue.append(succ)
-
-            if succ.transform.location.distance(self._destination) <= 3.5:
-                break
-
-            self._world.debug.draw_string(succ.transform.location, "*", color=carla.Color(r=0, g=255, b=0), life_time=0.0)
-
-            visited.add(succ.id)
-            current_waypoint = succ
-
-            i += 1
-
     def _get_lane_neighbors(self, target, r=5):
+        """
+        Retrieves waypoints which preceed a target in the same lane.
+        A helper function for disqualifiying multiple points to close to an obstacle 
+        from planning.
+        """
+
         last_pred = target
         last_succ = target
 
@@ -451,6 +383,35 @@ class BasicAgentD(BasicAgent):
             last_pred = p
 
         return candidates
+
+    def _update_obstacles(self):
+        """
+        Wraps around tick_seen_obstacles, adds extra logic for signalling obstacles
+        which left perception for D*
+        """
+
+        old_snap = self._get_seen_obstacles_snapshot()
+        self._tick_seen_obstacles()
+        new_snap = self._get_seen_obstacles_snapshot()
+
+        old_obs_wps = [self._search._dstar._closest_generated_waypoint(self._map.get_waypoint(x['location'])) for x in old_snap]
+        new_obs_wps = [self._search._dstar._closest_generated_waypoint(self._map.get_waypoint(x['location'])) for x in new_snap]
+
+        cleared = [x for x in old_obs_wps if x not in new_obs_wps]
+
+        if self._debug: print(f" - {len(cleared)} obstacles have left perception")
+
+        for c in cleared:
+            local_wpt = self.localize(c)
+
+            if self._blockers.get(local_wpt.id):
+                for x in self._blockers[local_wpt.id]:
+                    self._search.signal_cleared(x.transform.location)
+
+                del self._blockers[local_wpt.id]
+
+        if len(cleared) > 0:
+            self._queue.clear()
 
 if __name__ == "__main__":
     print("Entering main.")

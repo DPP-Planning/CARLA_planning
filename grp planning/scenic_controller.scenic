@@ -28,9 +28,11 @@ behavior DPP_Behavior(goal, timeout=15):
     controller._debug = False
     controller.start()   
 
-    while not controller.done():
-        print(distance from goal)
+    while not controller.done() and t <= timeout:
+        #print(distance from goal)
         #control = controller._agent.run_step()
         #take SetThrottleAction(control.throttle), SetSteerAction(control.steer), SetBrakeAction(control.brake)
         take EmptyAction()
+        t += 1
+
     terminate 

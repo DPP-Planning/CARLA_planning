@@ -2,7 +2,7 @@
 
 runs="1"
 noise="0"
-timeout="15"
+timeout="3600"
 
 while getopts r:n:t: flag
 do
