@@ -16,10 +16,10 @@ model scenic.simulators.carla.model
 import sys
 import random
 sys.path.insert(0, "/home/ubuntu/persistent/CARLA_LATEST/PythonAPI/carla")
-from agents.navigation.scenic_controller import DPP_Behavior
+from agents.navigation.scenic_controller import DPP_Behavior, Obstacle_Behavior
 
 # Randomize Spawn Location
-all_lane_sections = [x for x in list(network.elements.keys()) if isinstance(network.elements[x], LaneSection)]
+all_lane_sections = [x for x in list(network.elements.keys()) if isinstance(network.elements[x], Road)]
 
 start_choice = random.choice(all_lane_sections)
 goal_choice = random.choice(all_lane_sections)
@@ -34,6 +34,6 @@ goal = new OrientedPoint on goal_section
 
 # Spawn Ego
 ego = new Car at start, with behavior DPP_Behavior(goal, globalParameters.timeout), with color Color(1, 0, 0)
-blocker = new Car ahead of ego by 6
+blocker = new Car ahead of ego by 10, with behavior Obstacle_Behavior(timer=20)
 
 #mutate blocker by globalParameters.noise 

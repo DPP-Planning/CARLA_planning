@@ -643,9 +643,9 @@ class ThreadedDStarLite:
             best = None
             best_cost = float('inf')
 
-            candidates = []
             for s in succs:
                 sid = s.id
+                
                 entry = self._waypoint_index.get(sid)
 
                 if entry is None:
@@ -662,6 +662,8 @@ class ThreadedDStarLite:
                         entry = approx
                         g_s = approx['g']
 
+                # self._dstar.world.debug.draw_string(s.transform.location, f"[ ] - {g_s}", color = carla.Color(r=200, b=110, g=0), life_time=0.0)
+
                 try:
                    h = self._dstar.heuristic_c(current_waypoint, s)
                 except Exception:
@@ -673,6 +675,8 @@ class ThreadedDStarLite:
                     best_cost = cost
                     best = s
 
+            # if best is not None: self._dstar.world.debug.draw_string(best.transform.location, f"x", color = carla.Color(r=0, b=255, g=0), life_time=0.0)
+
             return best
 
     # --- Internal planner thread ---------------------------------------
@@ -682,23 +686,41 @@ class ThreadedDStarLite:
         Temporary fix for "inconsistent successor" problem
         Approximates a waypoint to a waypoint in the shortest path if the waypoint is within resolution distance
         Addresses problem where successor function returns waypoints unintialized by CSP
+
+        Finds best g-value if one in range.
+
         """
-        candidates = [v for (k, v) in self._waypoint_index.items() if v['g'] != float('inf') and v['waypoint'].transform.location.distance(target.transform.location) < self._dstar.resolution]
-        if len(candidates) > 0:
-            candidates.sort(key=lambda x: x['waypoint'].transform.location.distance(self._dstar.goal.transform.location)) 
-            return candidates[0]
         
+        candidates = []
+
+        for entry in self._waypoint_index.values():
+            if entry['g'] != float('inf'): 
+                if entry['waypoint'].transform.location.distance(target.transform.location) <= self._dstar.resolution + 1.0:
+                   candidates.append(entry)
+
+        #for entry in candidates:
+            #self._dstar.world.debug.draw_string(entry['waypoint'].transform.location, f"* - {entry['g']}", life_time=0.0,color=carla.Color(r=50, g=50, b=50))
+            #print(f" - candidate {entry['waypoint'].id}, g = {entry['g']}")
+
+        if len(candidates) > 0:
+            candidates.sort(key=lambda x: x['g'])
+            return candidates[0]
+
         return None
 
     def _planner_loop(self):
         """Background loop that recomputes compute_shortest_path when needed and updates snapshot."""
         print("[ThreadedDStarLite] Planner thread started.")
         while not self._stop_event.is_set():
-            self._dstar.start = self._dstar._closest_generated_waypoint(
-              self._dstar.map.get_waypoint(
-                self._dstar.vehicle.get_location()
-              )
-            )
+            try:
+                self._dstar.start = self._dstar._closest_generated_waypoint(
+                    self._dstar.map.get_waypoint(
+                        self._dstar.vehicle.get_location()
+                    )
+                )
+            except Exception as e:
+                print("[ThreadedDStarLite] Vehicle destroyed. Exiting.")
+                break
 
             if self._dstar.start.transform.location.distance(self._dstar.goal.transform.location) < 3.5:
                 self._stop_event.set()
@@ -753,9 +775,11 @@ class ThreadedDStarLite:
                 with self._lock:
                     try:
                         self._build_waypoint_index()
+
                     except Exception as e:
                         print("[ThreadedDStarLite] _build_waypoint_index() error:", e)
                 self._planner_idle.set()
+        self._stop_event.set()
         print("[ThreadedDStarLite] Planner thread exiting.")
 
     def _cost_update_obstacles(self):

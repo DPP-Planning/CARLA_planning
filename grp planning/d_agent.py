@@ -69,6 +69,8 @@ class DPP_Controller():
     def start(self):
         """
         Initalize threads and run agent.
+
+        Agent and Search modules must implement "start"
         """
 
         if self._search: self._search.start()
@@ -126,6 +128,7 @@ class BasicAgentD(BasicAgent):
 
         Executes one step of navigation.
         """
+        self._debug = False
 
         if self._debug: print("entered run_step")
 
@@ -179,7 +182,7 @@ class BasicAgentD(BasicAgent):
 
             obs_mesh = obs_data['mesh']
             obs_wpt = self.localize(self._map.get_waypoint(obs_mesh.center.location))
-            obs_preds = self.get_lane_predecessors(self.localize(obs_wpt), r=4)
+            obs_preds = self.get_lane_predecessors(self.localize(obs_wpt), r=2)
 
             for plan_wp in plan_waypoints:
                 if isinstance(plan_wp, carla.libcarla.Waypoint):
@@ -299,26 +302,30 @@ class BasicAgentD(BasicAgent):
         Thread function for the motion planner agent.
         """
 
-        print("mp: motion planner started")
+        print("[BasicAgentD] motion planner started")
 
         distance_from_goal = self._vehicle.get_location().distance(self._destination)
 
-        while distance_from_goal > 3.5:
+        try:
+            while distance_from_goal > 3.5:
 
-            distance_from_goal = self._vehicle.get_location().distance(self._destination)
-            # print(distance_from_goal)
+                distance_from_goal = self._vehicle.get_location().distance(self._destination)
+                # print(distance_from_goal)
 
-            if not self._vehicle.is_alive:
-                print("mp: agent vehicle died unexpectedly")
-                break
-    
-            else:
-                control_signal = self.run_step()
-                self._vehicle.apply_control(control_signal)
+                if not self._vehicle.is_alive:
+                    print("[BasicAgentD] agent vehicle died unexpectedly")
+                    break
+        
+                else:
+                    control_signal = self.run_step()
+                    self._vehicle.apply_control(control_signal)
 
-        self.stop_vehicle()
-        self._stop_event.set()
-        print("mp: motion planner terminated")
+            self.stop_vehicle()
+            self._stop_event.set()
+        except Exception as e:
+                print("[BasicAgentD] run_step() error:", e)
+
+        print("[BasicAgentD] motion planner terminated")
 
     def _get_next_waypoints(self):
         """

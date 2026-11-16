@@ -2,7 +2,7 @@
 
 runs="1"
 noise="0"
-timeout="3600"
+timeout="90"
 
 while getopts r:n:t: flag
 do
@@ -15,5 +15,5 @@ done
 
 
 scenic agents/navigation/scenic_test_0.scenic -b --count ${runs} --param timeout ${timeout} --param noise ${noise} --simulate --2d --model scenic.simulators.carla.model
-#scenic agents/navigation/scenic_test_A.scenic -b --count ${runs} --param timeout ${timeout} --param noise ${noise} --simulate --2d --model scenic.simulators.carla.model
-#scenic agents/navigation/scenic_test_B.scenic --count ${runs} --param noise ${noise} --simulate --2d --model scenic.simulators.carla.model
+scenic agents/navigation/scenic_test_A.scenic -b --count ${runs} --param timeout ${timeout} --param noise ${noise} --simulate --2d --model scenic.simulators.carla.model
+#scenic agents/navigation/scenic_test_B.scenic -b --count ${runs} --param timeout ${timeout} --param noise ${noise} --simulate --2d --model scenic.simulators.carla.model
