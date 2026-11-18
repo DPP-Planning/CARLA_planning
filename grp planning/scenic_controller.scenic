@@ -5,6 +5,14 @@ from scenic.domains.driving.actions import SetThrottleAction, SetSteerAction, Se
 from agents.navigation.d_agent import DPP_Controller
 import carla
 import time
+import random
+
+param map = localPath('../../../../CarlaUE4/Content/Carla/Maps/OpenDrive/Town10HD.xodr')
+
+def get_random_vector(network, road_element, avoid_junctions=True):
+    all_lane_sections = [x for x in list(network.elements.keys()) if isinstance(network.elements[x], road_element)]
+    choice = random.choice(all_lane_sections)
+    return new OrientedPoint on network.elements[choice]
 
 class EmptyAction(Action):
     def __init__(self):
@@ -13,7 +21,13 @@ class EmptyAction(Action):
     def applyTo(self, obj, sim):
         pass
 
-behavior DPP_Behavior(goal, timeout=180):
+behavior DPPBehavior(goal, timeout=180):
+
+    """
+    Behavior to initialize and run DPP Controller instance. Runs in a seperate thread.
+    Terminates when Controller signals completion. 
+    Terminates when timeout elsapses
+    """
 
     g = goal.position.coordinates
     t = 0    
@@ -25,28 +39,28 @@ behavior DPP_Behavior(goal, timeout=180):
         search_algorithm="dlite"
     )
 
-    controller._debug = False
-    controller.start()   
+    controller.start()
+    goal_distance = self.carlaActor.get_location().distance(carla.Location(g[0], g[1], g[2]))
 
     while not controller.done():
+        goal_distance = self.carlaActor.get_location().distance(carla.Location(g[0], g[1], g[2]))
+        #print(goal_distance)
         take EmptyAction()
 
         t += 1
         if t >= timeout: 
             break
 
-    print("exited main loop")
-
-    if t > timeout:
-        print("Scene: Agent timed out.")
-    elif controller.done():
+    if t >= timeout:
+        print(f"Scene: Agent timed out. Distance from goal {goal_distance}")
+    elif goal_distance <= 4:
         print("Scene: Agent reached goal.")
     else:
-        print("Scene: Agent failed unexpectedly.")
+        print(f"Scene: Agent failed unexpectedly. Distance from goal {goal_distance}")
 
     terminate 
 
-behavior Obstacle_Behavior(timer=-1):
+behavior MoveableObstacleBehavior(next, timer=-1):
     i = 0
 
     while True:
@@ -56,6 +70,4 @@ behavior Obstacle_Behavior(timer=-1):
         take EmptyAction()
         
     while True:
-        i += 1
-        take SetThrottleAction(1.0)
-
+        do next()
