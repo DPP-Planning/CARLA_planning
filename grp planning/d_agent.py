@@ -4,20 +4,23 @@ sys.path.insert(0, "/home/ubuntu/persistent/CARLA_LATEST/PythonAPI/carla")
 
 from agents.navigation.basic_agent import BasicAgent
 from agents.navigation.controller import VehiclePIDController
+from agents.navigation.Generate_map import gen_map_initial
 from agents.tools.misc import get_speed
+
 from queue import Queue
 from collections import deque
 import carla
 import random
 import threading
 import time
+
 from dLite.dlite import ThreadedDStarLite, DStarLite
-from agents.navigation.Generate_map import gen_map_initial
+from astar import ThreadedAStar
 
 position_update_frequency = 5
 
 class DPP_Controller():
-    def __init__(self, vehicle: carla.Vehicle, destination: carla.Location, waypoints, search_algorithm="dlite"):
+    def __init__(self, vehicle: carla.Vehicle, destination: carla.Location, waypoints, search_module="dlite", agent_module="basic"):
         self._vehicle = vehicle
         self._destination = destination
         self._world = self._vehicle.get_world()
@@ -35,7 +38,7 @@ class DPP_Controller():
         self._search = None
         self._agent = None
 
-        if search_algorithm == "dlite":
+        if search_module == "dlite":
             self._search = ThreadedDStarLite(DStarLite(
                 self._world,
                 self._map.get_waypoint(self._vehicle.get_location()),
@@ -46,31 +49,42 @@ class DPP_Controller():
                 waypoint_graph=map_data.waypoint_graph,
                 waypoint_lookup=map_data.waypoint_lookup
             ))
-
-            self._agent = BasicAgentD(self._vehicle, self._destination, self._search)
-
-        elif search_algorithm == "astar":
-            self._search = None
-            self._agent = BasicAgent(self._vehicle)
-            self._agent.set_destination(self._destination, None)
-
-        elif search_algorithm == "dstar":
-            self._search = None
-            self._agent = None
-
+        elif search_module == "astar":
+            self._search = ThreadedAStar(
+                self._destination,
+                self._vehicle,
+                self._world         
+            )
         else:
             self._search = None
+
+        if agent_module == "basic":
+            self._agent = BasicAgentD(
+                self._vehicle, 
+                self._destination, 
+                self._search
+            )
+        else:
             self._agent = None
 
-
     def done(self):
-        return self._agent.done()
+        return self._agent.done() or self._search.done()
 
     def start(self):
         """
         Initalize threads and run agent.
 
-        Agent and Search modules must implement "start"
+        Agent and Search modules must implement:
+            start()
+                - start the agent thread
+            done()
+                - check if thread is finished 
+        
+        Search must implement:
+            get_best_successor(waypoint: carla.Waypoint) -> successor: carla.Waypoint
+                - Return the next waypoint the agent should go to.
+            set_obstacles(obstacle_snapshot: [obstacle_data])
+                - Update obstacle environment for search.
         """
 
         if self._search: self._search.start()
@@ -131,15 +145,17 @@ class BasicAgentD(BasicAgent):
         self._debug = False
 
         if self._debug: print("entered run_step")
+        if self._vehicle.get_location().distance(self._destination) < 3.5: self._stop_event.set()
 
         hazard_obstacle = False
         hazard_light = False
         vehicle_speed = get_speed(self._vehicle) / 5
 
-        self._update_obstacles()
+        self._tick_seen_obstacles()
+        #self._update_obstacles()
 
         if self.last_wp is None:
-            self.last_wp = self.localize(self._map.get_waypoint(self._vehicle.get_location()))
+            self.last_wp = self._map.get_waypoint(self._vehicle.get_location())
 
         if len(self._queue) <= self._q_max // 2:
             self._get_next_waypoints()
@@ -158,59 +174,48 @@ class BasicAgentD(BasicAgent):
             target_wp
         )
 
-        if target_distance < self._sampling_radius:
+        if target_distance <= self._sampling_radius + 1.0:
             self.last_wp = target_wp
             self._queue.popleft()
 
-        min_vehicle_distance = 25
-        ego_location = self._vehicle.get_location()
-        plan_waypoints = [wp for wp in self._queue]
-        path_blocked_by_bbox = False
-        blocking_candidates = []
+        #min_vehicle_distance = 25
+        #ego_location = self._vehicle.get_location()
+        #path_blocked_by_bbox = False
+        #blocking_candidates = []
 
+        plan_waypoints = [wp for wp in self._queue]
         snapshot = self._get_seen_obstacles_snapshot()
 
-        for obs_data in snapshot:
-            velocity = obs_data['velocity']
+        if len(plan_waypoints) > 0:
+            for obs_data in snapshot:
+                velocity = obs_data['velocity']
 
-            if abs(velocity.x) >= vehicle_speed  or abs(velocity.y) >= vehicle_speed:
-                continue
-
-            actor = obs_data['actor']
-            if not actor.is_alive:
-                continue
-
-            obs_mesh = obs_data['mesh']
-            obs_wpt = self.localize(self._map.get_waypoint(obs_mesh.center.location))
-            obs_preds = self.get_lane_predecessors(self.localize(obs_wpt), r=2)
-
-            for plan_wp in plan_waypoints:
-                if isinstance(plan_wp, carla.libcarla.Waypoint):
-                    plan_wp_location = plan_wp.transform.location
-                else:
-                    plan_wp_location = plan_wp
-
-                if ego_location.distance(plan_wp_location) > min_vehicle_distance:
+                if abs(velocity.x) >= vehicle_speed  or abs(velocity.y) >= vehicle_speed:
                     continue
 
-                if obs_mesh.contains_waypoint(plan_wp) or self.localize(plan_wp) in obs_preds:
-                    if self._debug: print(f" - obstacle detected on plan waypoint {plan_wp.id}")
-                    path_blocked_by_bbox = True
+                actor = obs_data['actor']
+                if not actor.is_alive:
+                    continue
+
+                obs_mesh = obs_data['mesh']
+                obs_wpt = self._map.get_waypoint(obs_mesh.center.location)
+
+                plan_waypoints.sort(key=lambda x: x.transform.location.distance(obs_wpt.transform.location))
+
+                # if plan_waypoints[0].transform.location.distance(obs_wpt.transform.location) <= max(self._vehicle.bounding_box.extent.x, self._vehicle.bounding_box.extent.y):
+                #     hazard_obstacle = True
+                #     blocked_plan_wp = plan_waypoints[0]
+                #     self._blockers[obs_wpt.id] = []
+                #     for p in plan_waypoints: 
+                #         if p.transform.location.distance(blocked_plan_wp.transform.location) <= 10:
+                #             blocking_candidates.append(p)
+                #             self._blockers[obs_wpt.id].append(p)
+
+                if plan_waypoints[0].transform.location.distance(obs_wpt.transform.location) <= max(self._vehicle.bounding_box.extent.x, self._vehicle.bounding_box.extent.y):
                     hazard_obstacle = True
-
-                    # Append Obstacle Waypoint
-                    blocking_candidates.append(obs_wpt)
-                    blocking_candidates.append(self.localize(plan_wp))
-
-                    # Append Adjacent Lane Waypoints
-                    if obs_wpt.id not in self._blockers.keys():
-                        self._blockers[obs_wpt.id] = [obs_wpt]
-
-                    if not any([x.id == self.localize(plan_wp).id for x in self._blockers[obs_wpt.id]]):
-                        self._blockers[obs_wpt.id].append(self.localize(plan_wp))
-
-            if path_blocked_by_bbox:
-                break
+            
+            if hazard_obstacle:
+                self._search.set_obstacles(self._get_seen_obstacles_snapshot())
 
         # Check if the vehicle is affected by a red traffic light
         max_tlight_distance = self._base_tlight_threshold + self._speed_ratio * vehicle_speed
@@ -218,45 +223,48 @@ class BasicAgentD(BasicAgent):
         if affected_by_tlight:
             hazard_light = True
 
-        if hazard_obstacle and hazard_light:
+        if hazard_obstacle or hazard_light:
             control = self.add_emergency_stop(control)
-        elif hazard_obstacle:
-            if self._debug: print(" - hazard detected, correcting...")
 
-            adjacent_lane_blocked = False
-            for b in blocking_candidates:
-                if self._adjacent_lane_waypoints_blocked(b):
-                    adjacent_lane_blocked = True
-                    break
+        # if hazard_obstacle and hazard_light:
+        #     control = self.add_emergency_stop(control)
+        # elif hazard_obstacle:
+        #     if self._debug: print(" - hazard detected, correcting...")
 
-            if blocking_candidates and adjacent_lane_blocked:
+        #     adjacent_lane_blocked = False
+        #     for b in blocking_candidates:
+        #         if self._adjacent_lane_waypoints_blocked(b):
+        #             adjacent_lane_blocked = True
+        #             break
 
-                # If obstacle cannot be navigated around, stop.
+        #     if blocking_candidates and adjacent_lane_blocked:
 
-                if self._debug: print(" - adjacent lane waypoint(s) blocked near obstacle. Emergency stopping.")
-                control = self.add_emergency_stop(control)
+        #         # If obstacle cannot be navigated around, stop.
 
-            elif blocking_candidates and (self._previous_obstacle is None or set([w.id for w in blocking_candidates]) != self._previous_obstacle):
-                if self._debug: print(" - sending obstacles to dlite")
+        #         if self._debug: print(" - adjacent lane waypoint(s) blocked near obstacle. Emergency stopping.")
+        #         control = self.add_emergency_stop(control)
 
-                # If obstacle can be navigated around
-                # 1. Send obstacles and a replan request to D*
-                # 2. Clear queued waypoints.
+        #     elif blocking_candidates and (self._previous_obstacle is None or set([w.id for w in blocking_candidates]) != self._previous_obstacle):
+        #         if self._debug: print(" - sending obstacles to dlite")
 
-                for candidate in blocking_candidates:
-                    self._search.signal_obstacle(candidate.transform.location)
+        #         # If obstacle can be navigated around
+        #         # 1. Send obstacles and a replan request to D*
+        #         # 2. Clear queued waypoints.
 
-                self._previous_obstacle = set([w.id for w in blocking_candidates])
-                self._queue.clear()
+        #         for candidate in blocking_candidates:
+        #             self._search.signal_obstacle(candidate.transform.location)
 
-                for candidate in blocking_candidates:
-                    self._world.debug.draw_string(candidate.transform.location, 'Obstacle', draw_shadow=False,
-                    color=carla.Color(r=255, g=0, b=0), life_time=5.0,
-                    persistent_lines=True)
+        #         self._previous_obstacle = set([w.id for w in blocking_candidates])
+        #         self._queue.clear()
 
-                control = self.add_emergency_stop(control)
-            elif blocking_candidates:
-                control = self.add_emergency_stop(control)
+        #         for candidate in blocking_candidates:
+        #             self._world.debug.draw_string(candidate.transform.location, 'Obstacle', draw_shadow=False,
+        #             color=carla.Color(r=255, g=0, b=0), life_time=5.0,
+        #             persistent_lines=True)
+
+        #         control = self.add_emergency_stop(control)
+        #     elif blocking_candidates:
+        #         control = self.add_emergency_stop(control)
 
         return control
 
@@ -266,9 +274,6 @@ class BasicAgentD(BasicAgent):
         control.steer = 0.0
         control.brake = 1.0
         self._vehicle.apply_control(control)
-
-    def localize(self, waypoint):
-        return self._search._dstar._closest_generated_waypoint(waypoint)
 
     def get_lane_predecessors(self, waypoint, r=1):
         candidates = []
@@ -306,24 +311,23 @@ class BasicAgentD(BasicAgent):
 
         distance_from_goal = self._vehicle.get_location().distance(self._destination)
 
-        try:
-            while distance_from_goal > 3.5:
+        # try:
+        while not self._stop_event.is_set():
 
-                distance_from_goal = self._vehicle.get_location().distance(self._destination)
-                # print(distance_from_goal)
+            distance_from_goal = self._vehicle.get_location().distance(self._destination)
 
-                if not self._vehicle.is_alive:
-                    print("[BasicAgentD] agent vehicle died unexpectedly")
-                    break
-        
-                else:
-                    control_signal = self.run_step()
-                    self._vehicle.apply_control(control_signal)
+            if not self._vehicle.is_alive:
+                self._stop_event.set()
+                print("[BasicAgentD] agent vehicle died unexpectedly")
 
-            self.stop_vehicle()
-            self._stop_event.set()
-        except Exception as e:
-                print("[BasicAgentD] run_step() error:", e)
+            else:
+                control_signal = self.run_step()
+                self._vehicle.apply_control(control_signal)
+            
+        # except Exception as e:
+        #         self._stop_event.set()
+        #         print(e)
+        #         print("[BasicAgentD] run_step() error:", e)
 
         print("[BasicAgentD] motion planner terminated")
 
@@ -332,9 +336,8 @@ class BasicAgentD(BasicAgent):
         Keep getting current best route successors until the queue is full.
         """
 
-        if self._search._needs_replan.is_set():
-            if self._debug: print(" - exiting GWP: search is still planning.")
-            return
+        # if self._search._needs_replan.is_set():
+        #     return
 
         current_waypoint = self._queue[-1] if len(self._queue) > 0 else self.last_wp
 
@@ -343,7 +346,6 @@ class BasicAgentD(BasicAgent):
 
         i = 0
 
-        if self._debug: print(" - GWP filling queue...")
         while len(self._queue) < self._q_max:
             succ = self._search.get_best_successor(current_waypoint)
 
@@ -360,36 +362,6 @@ class BasicAgentD(BasicAgent):
             visited.add(succ.id)
             current_waypoint = succ
             i += 1
-
-        if self._debug: print(f" - GWP finished after queueing {i} waypoints")
-
-    def _get_lane_neighbors(self, target, r=5):
-        """
-        Retrieves waypoints which preceed a target in the same lane.
-        A helper function for disqualifiying multiple points to close to an obstacle 
-        from planning.
-        """
-
-        last_pred = target
-        last_succ = target
-
-        candidates = []
-
-        for i in range(r):
-            succs = self._search._dstar.successors(last_succ)
-            preds = self._search._dstar.predecessors(last_pred)
-
-            s = [x for x in succs if target.lane_id == x.lane_id][0]
-            p = [x for x in preds if target.lane_id == x.lane_id][0]
-            candidates.append(s)
-            #candidates.append(p)
-
-            #self._world.debug.draw_string(p.transform.location, "{ }", color=carla.Color(r=100, g=255, b=0), life_time=0.0)
-
-            last_succ = s
-            last_pred = p
-
-        return candidates
 
     def _update_obstacles(self):
         """
@@ -409,7 +381,7 @@ class BasicAgentD(BasicAgent):
         if self._debug: print(f" - {len(cleared)} obstacles have left perception")
 
         for c in cleared:
-            local_wpt = self.localize(c)
+            local_wpt = c
 
             if self._blockers.get(local_wpt.id):
                 for x in self._blockers[local_wpt.id]:

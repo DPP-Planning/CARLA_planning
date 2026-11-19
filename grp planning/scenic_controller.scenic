@@ -21,7 +21,7 @@ class EmptyAction(Action):
     def applyTo(self, obj, sim):
         pass
 
-behavior DPPBehavior(goal, timeout=180):
+behavior DPPBehavior(goal, timeout=180, ps="dlite", mp="basic"):
 
     """
     Behavior to initialize and run DPP Controller instance. Runs in a seperate thread.
@@ -36,7 +36,8 @@ behavior DPPBehavior(goal, timeout=180):
         self.carlaActor, 
         carla.Location(g[0], g[1], g[2]),
         self.carlaActor.get_world().get_map().get_spawn_points(), 
-        search_algorithm="dlite"
+        search_module=ps,
+        agent_module=mp
     )
 
     controller.start()

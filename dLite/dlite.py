@@ -536,6 +536,7 @@ class ThreadedDStarLite:
         #     "Threaded usage will NOT call DStarLite.main() automatically. "
         #     "Use get_best_successor() from main thread to move the vehicle."
         # )
+        self._avoidance_cluster = {}
 
         self.wp_getter = None
 
@@ -558,11 +559,63 @@ class ThreadedDStarLite:
 
         self._dstar.s_last = self._dstar.start
 
+    def done(self):
+        return self._stop_event.is_set()
+
     def stop(self, join_timeout=1.0):
         print("[ThreadedDStarLite] Stopping Planner Thread")
         self._stop_event.set()
         if self._planner_thread:
             self._planner_thread.join(timeout=join_timeout)
+
+    def set_obstacles(self, seen_obstacles_snapshot):
+        snapshot_waypoints = [self._dstar._closest_generated_waypoint(self._dstar.map.get_waypoint(x['location'])) for x in seen_obstacles_snapshot]
+        snapshot_ids = [x.id for x in snapshot_waypoints]
+
+        with self._lock:
+            # Cleared Obstacle
+            for (obs_id, obs) in self._dstar.all_obst_wps.items():
+                if obs_id not in snapshot_ids:
+                    self._needs_replan.set()
+
+                    if obs_id in self._dstar.all_obst_wps.keys(): del self._dstar.all_obst_wps[wpt.id]
+                    if obs_id in self._dstar.new_obst_wps.keys(): del self._dstar.new_obst_wps[wpt.id]
+                    self._dstar.cleared_obst_wps[obs_id] = obs
+
+                    if obs_id in self._avoidance_cluster.keys():
+                        for wpt in self._avoidance_cluster[obs_id]:
+                            if wpt.id in self._dstar.all_obst_wps.keys(): del self._dstar.all_obst_wps[wpt.id]
+                            if wpt.id in self._dstar.new_obst_wps.keys(): del self._dstar.new_obst_wps[wpt.id]
+                            self._dstar.cleared_obst_wps[wpt.id] = wpt
+                            
+                        del self._avoidance_cluster[obs_id]
+                   
+            # New Obstacle    
+            for entry in seen_obstacles_snapshot:
+                # obs_speed = entry['velocity']
+                # if obs_speed.x > 5.0 and obs_speed.y > 5.0: 
+                #     continue 
+
+                entry_wpt = self._dstar._closest_generated_waypoint(
+                    self._dstar.map.get_waypoint(
+                        entry['location']
+                    )
+                )
+
+                if entry_wpt.id not in self._dstar.all_obst_wps.keys():
+                    self._needs_replan.set()
+                    self._dstar.add_obst_loc_to_obst_wp(entry['location'])
+
+                    self._avoidance_cluster[entry_wpt.id] = [entry_wpt]
+                    all_wps = getattr(self._dstar, "all_waypoints", [])
+
+                    for wp in all_wps:  
+                        if wp.transform.location.distance(entry['location']) < 10.0 and wp.lane_id == entry_wpt.lane_id:
+                            self._dstar.add_obst_loc_to_obst_wp(wp.transform.location)
+                            self._avoidance_cluster[entry_wpt.id].append(wp)
+                        if wp.transform.location.distance(entry['location']) < max(self._dstar.vehicle.bounding_box.extent.x, self._dstar.vehicle.bounding_box.extent.y) + 1.0:
+                            self._dstar.add_obst_loc_to_obst_wp(wp.transform.location)
+                            self._avoidance_cluster[entry_wpt.id].append(wp)
 
     def signal_obstacle(self, location):
         #print("[ThreadedDStarLite] signaling obstacle")
@@ -593,34 +646,8 @@ class ThreadedDStarLite:
 
                 self._needs_replan.set()
 
-                # Correct obstacle successor cost
-                #min_s = float('inf')
-                #for s in self._dstar.successors(gen_wp):
-                #    temp = self._dstar.heuristic_c(gen_wp, s) + self._dstar.g[s.id]
-                #    if temp < min_s: min_s = temp
-
-                #self._dstar.rhs[gen_wp.id] = min_s
-                #self._dstar.update_vertex(gen_wp)
-
-                # Correct obstacle predecessor costs
-                #for p in self._dstar.predecessors(gen_wp):
-                #    min_s = float('inf')
-                #    for p_s in self._dstar.successors(p):
-                #        temp = self._dstar.heuristic_c(p, p_s) + self._dstar.g[p_s.id]
-                #        if temp < min_s: min_s = temp
-
-                #    self._dstar.rhs[p.id] = min_s
-                #    self._dstar.update_vertex(p)
-
-
-                #self._dstar.compute_shortest_path()
-                #self._build_waypoint_index()
-
             except Exception as e:
                 print("ThreadedDStarLite] signal_cleared() error:", e)
-
-    def signal_cluster(self, location, cluster):
-        pass
 
     def request_replan(self):
         print("[ThreadedDStarLite] Replan requested.")
@@ -698,10 +725,6 @@ class ThreadedDStarLite:
                 if entry['waypoint'].transform.location.distance(target.transform.location) <= self._dstar.resolution + 1.0:
                    candidates.append(entry)
 
-        #for entry in candidates:
-            #self._dstar.world.debug.draw_string(entry['waypoint'].transform.location, f"* - {entry['g']}", life_time=0.0,color=carla.Color(r=50, g=50, b=50))
-            #print(f" - candidate {entry['waypoint'].id}, g = {entry['g']}")
-
         if len(candidates) > 0:
             candidates.sort(key=lambda x: x['g'])
             return candidates[0]
@@ -722,8 +745,10 @@ class ThreadedDStarLite:
                 print("[ThreadedDStarLite] Vehicle destroyed. Exiting.")
                 break
 
-            if self._dstar.start.transform.location.distance(self._dstar.goal.transform.location) < 3.5:
+            distance_from_goal = self._dstar.vehicle.get_location().distance(self._dstar.goal.transform.location)
+            if distance_from_goal < 3.5:
                 self._stop_event.set()
+                print(f"[ThreadedDStarLite] Goal reached (distance {distance_from_goal}). Exiting.")
                 continue
 
             if not self._needs_replan.is_set():
