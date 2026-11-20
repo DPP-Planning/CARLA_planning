@@ -20,7 +20,9 @@ from astar import ThreadedAStar
 position_update_frequency = 5
 
 class DPP_Controller():
-    def __init__(self, vehicle: carla.Vehicle, destination: carla.Location, waypoints, search_module="dlite", agent_module="basic"):
+    def __init__(self, vehicle: carla.Vehicle, destination: carla.Location, waypoints, search_module="dlite", agent_module="basic", search_algorithm=None):
+        if search_algorithm is not None:
+            search_module = search_algorithm
         self._vehicle = vehicle
         self._destination = destination
         self._world = self._vehicle.get_world()
@@ -50,15 +52,14 @@ class DPP_Controller():
                 waypoint_lookup=map_data.waypoint_lookup
             ))
         elif search_module == "astar":
-            self._search = ThreadedAStar(
-                self._destination,
-                self._vehicle,
-                self._world         
-            )
+            self._search = None
         else:
             self._search = None
 
-        if agent_module == "basic":
+        if search_module == "astar":
+            self._agent = BasicAgent(self._vehicle)
+            self._agent.set_destination(self._destination, None)
+        elif agent_module == "basic":
             self._agent = BasicAgentD(
                 self._vehicle, 
                 self._destination, 
@@ -68,7 +69,9 @@ class DPP_Controller():
             self._agent = None
 
     def done(self):
-        return self._agent.done() or self._search.done()
+        agent_done = self._agent.done() if self._agent and hasattr(self._agent, "done") else False
+        search_done = self._search.done() if self._search and hasattr(self._search, "done") else False
+        return agent_done or search_done
 
     def start(self):
         """
@@ -316,7 +319,16 @@ class BasicAgentD(BasicAgent):
 
             distance_from_goal = self._vehicle.get_location().distance(self._destination)
 
-            if not self._vehicle.is_alive:
+            if distance_from_goal < 3.5:
+                self._stop_event.set()
+                control = carla.VehicleControl()
+                control.brake = 1.0
+                control.throttle = 0.0
+                control.steer = 0.0
+                self._vehicle.apply_control(control)
+                break
+
+            if not getattr(self._vehicle, "is_alive", True):
                 self._stop_event.set()
                 print("[BasicAgentD] agent vehicle died unexpectedly")
 
@@ -336,10 +348,14 @@ class BasicAgentD(BasicAgent):
         Keep getting current best route successors until the queue is full.
         """
 
-        # if self._search._needs_replan.is_set():
-        #     return
+        if self._search is None or getattr(self._search, "_needs_replan", threading.Event()).is_set():
+            return
 
-        current_waypoint = self._queue[-1] if len(self._queue) > 0 else self.last_wp
+        current_waypoint = getattr(self, "last_wp", None)
+        if current_waypoint is None:
+            current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
+        if current_waypoint.is_junction:
+            return self._get_junction_route()
 
         visited = {wp.id for wp in self._queue}
         visited.add(current_waypoint.id)
@@ -362,6 +378,22 @@ class BasicAgentD(BasicAgent):
             visited.add(succ.id)
             current_waypoint = succ
             i += 1
+
+    def _get_junction_route(self):
+        current_waypoint = getattr(self, "last_wp", None)
+        if current_waypoint is None:
+            current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
+        visited = {waypoint.id for waypoint in self._queue}
+        visited.add(current_waypoint.id)
+        while current_waypoint.is_junction and len(self._queue) < self._q_max:
+            successor = self._search.get_best_successor(current_waypoint)
+            if successor is None or successor.id in visited:
+                break
+            self._queue.append(successor)
+            visited.add(successor.id)
+            current_waypoint = successor
+            if successor.transform.location.distance(self._destination) < 3.5:
+                break
 
     def _update_obstacles(self):
         """

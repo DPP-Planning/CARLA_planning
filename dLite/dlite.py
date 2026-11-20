@@ -661,11 +661,16 @@ class ThreadedDStarLite:
         if current_waypoint is None:
             return None
         with self._lock:
+            current_waypoint = self._dstar._closest_generated_waypoint(current_waypoint)
+            if current_waypoint is None:
+                return None
             try:
                 succs = self._dstar.successors(current_waypoint)
             except Exception as e:
                 print(f"d: exception in successors(), {e}")
                 succs = []
+            if not self._waypoint_index and len(succs) == 1:
+                return succs[0]
             #print(f"d: succs: {len(succs)}")
             best = None
             best_cost = float('inf')
