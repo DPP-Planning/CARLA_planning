@@ -49,21 +49,8 @@ class ThreadedAStar:
                 #print("[ThreadedAStar] Request to best successor failed, no plan.")
                 return None
 
-            if waypoint in self._plan:
-                wp_idx = self._plan.index(waypoint)
-            else:
-                sorted_plan = self._plan
-                sorted_plan.sort(key=lambda x: x.transform.location.distance(waypoint.transform.location))
-                if sorted_plan[0].transform.location.distance(waypoint.transform.location) > 1.0:
-                    return None
-                wp_idx = self._plan.index(sorted_plan[0])
+            return self._plan.pop(0)
 
-            if wp_idx == len(self._plan) - 1:
-                return None
-
-            else:
-                return self._plan[wp_idx + 1]
-            
     def set_obstacles(self, seen_obstacles_snapshot):
         print(f"[ThreadedAStar] Got new obstacle snapshot")
         self._obstacle_snapshot = seen_obstacles_snapshot
@@ -71,10 +58,14 @@ class ThreadedAStar:
     # Private API
 
     def _get_goal_distance(self):
-        return self._vehicle.get_location().distance(self.goal)
+        return self.vehicle.get_location().distance(self.goal)
 
     def _planner_loop(self):
         while not self._stop_event.is_set():
+            if self._get_goal_distance() < 3.5:
+                print("[ThreadedAStar] Vehicle reached destination. Stopping")
+                self._stop_event.set()
+
             if self._needs_replan.is_set():
                 self._needs_replan.clear()
                 self._planner_idle.clear()
@@ -101,8 +92,8 @@ class ThreadedAStar:
 
                 self._planner_idle.set()    
             
-            time.sleep(1)
-
+            #time.sleep(1)
+        
 class AStarNode:
     def __init__(self, waypoint, g_cost, h_cost, parent=None):
         self.waypoint = waypoint
@@ -111,10 +102,10 @@ class AStarNode:
         self.f_cost = g_cost + h_cost
         self.parent = parent
 
-def get_legal_neighbors(waypoint):
+def get_legal_neighbors(waypoint, resolution=1.0):
     neighbors = []
     # Forward neighbor
-    forward = waypoint.next(2.0)
+    forward = waypoint.next(resolution)
     if forward:
         neighbors.extend(forward)
     
@@ -123,14 +114,14 @@ def get_legal_neighbors(waypoint):
         left_lane = waypoint.get_left_lane()
         if left_lane and left_lane.lane_type == carla.LaneType.Driving:
             neighbors.append(left_lane)
-            neighbors.append(left_lane.next(2.0)[0])
+            neighbors.append(left_lane.next(resolution)[0])
     
     # Legal right lane change
     if waypoint.lane_change & carla.LaneChange.Right:
         right_lane = waypoint.get_right_lane()
         if right_lane and right_lane.lane_type == carla.LaneType.Driving:
             neighbors.append(right_lane)
-            neighbors.append(right_lane.next(2.0)[0])
+            neighbors.append(right_lane.next(resolution)[0])
     
     return neighbors
 
@@ -161,6 +152,10 @@ def _near_goal(current_waypoint, goal, min_distance = 30.0):
 
 def a_star(start_waypoint, end_waypoint, world, seen_obstacles_snapshot=None, heuristic_func=euclidean_heuristic, max_distance=5000):
     global obstacles
+
+    world.debug.draw_string(start_waypoint.transform.location, "start", color=carla.Color(r=0, b=255, g=110), life_time=15.0)
+    world.debug.draw_string(end_waypoint.transform.location, "goal", color=carla.Color(r=110, b=255, g=0), life_time=15.0)
+
     start_node = AStarNode(start_waypoint, 0, heuristic_func(start_waypoint, end_waypoint))
     open_set = PriorityQueue()
     open_set.put((start_node.f_cost, id(start_node), start_node))

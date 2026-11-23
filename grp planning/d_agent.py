@@ -20,9 +20,7 @@ from astar import ThreadedAStar
 position_update_frequency = 5
 
 class DPP_Controller():
-    def __init__(self, vehicle: carla.Vehicle, destination: carla.Location, waypoints, search_module="dlite", agent_module="basic", search_algorithm=None):
-        if search_algorithm is not None:
-            search_module = search_algorithm
+    def __init__(self, vehicle: carla.Vehicle, destination: carla.Location, waypoints, search_module="dlite", agent_module="basic"):
         self._vehicle = vehicle
         self._destination = destination
         self._world = self._vehicle.get_world()
@@ -52,14 +50,15 @@ class DPP_Controller():
                 waypoint_lookup=map_data.waypoint_lookup
             ))
         elif search_module == "astar":
-            self._search = None
+            self._search = ThreadedAStar(
+                self._destination,
+                self._vehicle,
+                self._world         
+            )
         else:
             self._search = None
 
-        if search_module == "astar":
-            self._agent = BasicAgent(self._vehicle)
-            self._agent.set_destination(self._destination, None)
-        elif agent_module == "basic":
+        if agent_module == "basic":
             self._agent = BasicAgentD(
                 self._vehicle, 
                 self._destination, 
@@ -69,9 +68,7 @@ class DPP_Controller():
             self._agent = None
 
     def done(self):
-        agent_done = self._agent.done() if self._agent and hasattr(self._agent, "done") else False
-        search_done = self._search.done() if self._search and hasattr(self._search, "done") else False
-        return agent_done or search_done
+        return self._agent.done() or self._search.done()
 
     def start(self):
         """
@@ -127,6 +124,7 @@ class BasicAgentD(BasicAgent):
         self._set_route = False
         self._destination = destination
         self._search = search
+        self._last_snap = None
 
     def start(self, start_thread=True):
         self._init_controller()
@@ -147,15 +145,19 @@ class BasicAgentD(BasicAgent):
         """
         self._debug = False
 
+        ext_padding = 2.0
+        min_obs_distance = max(self._vehicle.bounding_box.extent.x + ext_padding, self._vehicle.bounding_box.extent.y + ext_padding)
+        consumption_range = self._sampling_radius + 1.0
+
         if self._debug: print("entered run_step")
         if self._vehicle.get_location().distance(self._destination) < 3.5: self._stop_event.set()
 
+        in_junction = self._map.get_waypoint(self._vehicle.get_location()).is_junction
         hazard_obstacle = False
         hazard_light = False
         vehicle_speed = get_speed(self._vehicle) / 5
 
         self._tick_seen_obstacles()
-        #self._update_obstacles()
 
         if self.last_wp is None:
             self.last_wp = self._map.get_waypoint(self._vehicle.get_location())
@@ -177,7 +179,7 @@ class BasicAgentD(BasicAgent):
             target_wp
         )
 
-        if target_distance <= self._sampling_radius + 1.0:
+        if target_distance < consumption_range:
             self.last_wp = target_wp
             self._queue.popleft()
 
@@ -188,6 +190,17 @@ class BasicAgentD(BasicAgent):
 
         plan_waypoints = [wp for wp in self._queue]
         snapshot = self._get_seen_obstacles_snapshot()
+
+        if self._last_snap is not None:
+            previous_actors = [x['actor'].id for x in self._last_snap]
+            new_actors = [x['actor'].id for x in snapshot]
+            changed_positions = any([x['position_changed'] for x in snapshot])
+            if previous_actors != new_actors or changed_positions:
+                if not in_junction: self._search.set_obstacles(snapshot)
+            self._last_snap = snapshot
+        else:
+            self._search.set_obstacles(snapshot)
+            self._last_snap = snapshot
 
         if len(plan_waypoints) > 0:
             for obs_data in snapshot:
@@ -214,20 +227,24 @@ class BasicAgentD(BasicAgent):
                 #             blocking_candidates.append(p)
                 #             self._blockers[obs_wpt.id].append(p)
 
-                if plan_waypoints[0].transform.location.distance(obs_wpt.transform.location) <= max(self._vehicle.bounding_box.extent.x, self._vehicle.bounding_box.extent.y):
+                same_lane = plan_waypoints[0].lane_id == obs_wpt.lane_id
+                if plan_waypoints[0].transform.location.distance(obs_wpt.transform.location) < min_obs_distance and same_lane:
                     hazard_obstacle = True
             
-            if hazard_obstacle:
-                self._search.set_obstacles(self._get_seen_obstacles_snapshot())
+            # if hazard_obstacle:
+            #     self._search.set_obstacles(self._get_seen_obstacles_snapshot())
 
         # Check if the vehicle is affected by a red traffic light
-        max_tlight_distance = self._base_tlight_threshold + self._speed_ratio * vehicle_speed
-        affected_by_tlight, _ = self._affected_by_traffic_light(self._lights_list, max_tlight_distance)
-        if affected_by_tlight:
-            hazard_light = True
+        # max_tlight_distance = self._base_tlight_threshold + self._speed_ratio * vehicle_speed
+        # affected_by_tlight, _ = self._affected_by_traffic_light(self._lights_list, max_tlight_distance)
+        # if affected_by_tlight:
+        #     hazard_light = True
 
         if hazard_obstacle or hazard_light:
             control = self.add_emergency_stop(control)
+
+        if hazard_obstacle and not in_junction:
+            self._queue.clear()
 
         # if hazard_obstacle and hazard_light:
         #     control = self.add_emergency_stop(control)
@@ -319,16 +336,7 @@ class BasicAgentD(BasicAgent):
 
             distance_from_goal = self._vehicle.get_location().distance(self._destination)
 
-            if distance_from_goal < 3.5:
-                self._stop_event.set()
-                control = carla.VehicleControl()
-                control.brake = 1.0
-                control.throttle = 0.0
-                control.steer = 0.0
-                self._vehicle.apply_control(control)
-                break
-
-            if not getattr(self._vehicle, "is_alive", True):
+            if not self._vehicle.is_alive:
                 self._stop_event.set()
                 print("[BasicAgentD] agent vehicle died unexpectedly")
 
@@ -348,14 +356,10 @@ class BasicAgentD(BasicAgent):
         Keep getting current best route successors until the queue is full.
         """
 
-        if self._search is None or getattr(self._search, "_needs_replan", threading.Event()).is_set():
+        if self._search._needs_replan.is_set():
             return
 
-        current_waypoint = getattr(self, "last_wp", None)
-        if current_waypoint is None:
-            current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
-        if current_waypoint.is_junction:
-            return self._get_junction_route()
+        current_waypoint = self._queue[-1] if len(self._queue) > 0 else self.last_wp
 
         visited = {wp.id for wp in self._queue}
         visited.add(current_waypoint.id)
@@ -373,27 +377,11 @@ class BasicAgentD(BasicAgent):
 
             self._queue.append(succ)
 
-            #self._world.debug.draw_string(succ.transform.location, "*", color=carla.Color(r=0, g=255, b=0), life_time=1.0)
+            self._world.debug.draw_string(succ.transform.location, "*", color=carla.Color(r=0, g=255, b=0), life_time=1.0)
 
             visited.add(succ.id)
             current_waypoint = succ
             i += 1
-
-    def _get_junction_route(self):
-        current_waypoint = getattr(self, "last_wp", None)
-        if current_waypoint is None:
-            current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
-        visited = {waypoint.id for waypoint in self._queue}
-        visited.add(current_waypoint.id)
-        while current_waypoint.is_junction and len(self._queue) < self._q_max:
-            successor = self._search.get_best_successor(current_waypoint)
-            if successor is None or successor.id in visited:
-                break
-            self._queue.append(successor)
-            visited.add(successor.id)
-            current_waypoint = successor
-            if successor.transform.location.distance(self._destination) < 3.5:
-                break
 
     def _update_obstacles(self):
         """

@@ -537,7 +537,7 @@ class ThreadedDStarLite:
         #     "Use get_best_successor() from main thread to move the vehicle."
         # )
         self._avoidance_cluster = {}
-
+        self._visited = []
         self.wp_getter = None
 
     # --- Public API -----------------------------------------------------
@@ -573,13 +573,13 @@ class ThreadedDStarLite:
         snapshot_ids = [x.id for x in snapshot_waypoints]
 
         with self._lock:
-            # Cleared Obstacle
-            for (obs_id, obs) in self._dstar.all_obst_wps.items():
+            # Cleared 
+            for (obs_id, obs) in self._dstar.all_obst_wps.copy().items():
                 if obs_id not in snapshot_ids:
                     self._needs_replan.set()
 
-                    if obs_id in self._dstar.all_obst_wps.keys(): del self._dstar.all_obst_wps[wpt.id]
-                    if obs_id in self._dstar.new_obst_wps.keys(): del self._dstar.new_obst_wps[wpt.id]
+                    if obs_id in self._dstar.all_obst_wps.keys(): del self._dstar.all_obst_wps[obs_id]
+                    if obs_id in self._dstar.new_obst_wps.keys(): del self._dstar.new_obst_wps[obs_id]
                     self._dstar.cleared_obst_wps[obs_id] = obs
 
                     if obs_id in self._avoidance_cluster.keys():
@@ -610,7 +610,7 @@ class ThreadedDStarLite:
                     all_wps = getattr(self._dstar, "all_waypoints", [])
 
                     for wp in all_wps:  
-                        if wp.transform.location.distance(entry['location']) < 10.0 and wp.lane_id == entry_wpt.lane_id:
+                        if wp.transform.location.distance(entry['location']) < 5.0 and wp.lane_id == entry_wpt.lane_id:
                             self._dstar.add_obst_loc_to_obst_wp(wp.transform.location)
                             self._avoidance_cluster[entry_wpt.id].append(wp)
                         if wp.transform.location.distance(entry['location']) < max(self._dstar.vehicle.bounding_box.extent.x, self._dstar.vehicle.bounding_box.extent.y) + 1.0:
@@ -660,17 +660,25 @@ class ThreadedDStarLite:
     def get_best_successor(self, current_waypoint, prefer_lowest_g=True):
         if current_waypoint is None:
             return None
+
+        self._visited.append(self._dstar._closest_generated_waypoint(current_waypoint))
+
+        if current_waypoint.transform.location.distance(self._dstar.goal.transform.location) < 1.0:
+            return None
+
+        if current_waypoint.transform.location.distance(self._dstar.start.transform.location) < 2.0:
+            current_waypoint = self._dstar.start
+
         with self._lock:
-            current_waypoint = self._dstar._closest_generated_waypoint(current_waypoint)
-            if current_waypoint is None:
-                return None
             try:
                 succs = self._dstar.successors(current_waypoint)
             except Exception as e:
                 print(f"d: exception in successors(), {e}")
                 succs = []
-            if not self._waypoint_index and len(succs) == 1:
-                return succs[0]
+
+            # if not self._waypoint_index:
+            #     return None
+
             #print(f"d: succs: {len(succs)}")
             best = None
             best_cost = float('inf')
@@ -681,6 +689,9 @@ class ThreadedDStarLite:
                 entry = self._waypoint_index.get(sid)
 
                 if entry is None:
+                    continue
+
+                if self._dstar._closest_generated_waypoint(s) in self._visited: 
                     continue
         
                 g_s = entry['g']
@@ -694,7 +705,7 @@ class ThreadedDStarLite:
                         entry = approx
                         g_s = approx['g']
 
-                # self._dstar.world.debug.draw_string(s.transform.location, f"[ ] - {g_s}", color = carla.Color(r=200, b=110, g=0), life_time=0.0)
+                self._dstar.world.debug.draw_string(s.transform.location, f"[ ] - {g_s}", color = carla.Color(r=200, b=110, g=0), life_time=0.0)
 
                 try:
                    h = self._dstar.heuristic_c(current_waypoint, s)
@@ -707,13 +718,11 @@ class ThreadedDStarLite:
                     best_cost = cost
                     best = s
 
-            # if best is not None: self._dstar.world.debug.draw_string(best.transform.location, f"x", color = carla.Color(r=0, b=255, g=0), life_time=0.0)
-
             return best
 
     # --- Internal planner thread ---------------------------------------
 
-    def _approximate_wp_by_index(self, target):
+    def _approximate_wp_by_index(self, target, padding=2.0):
         """
         Temporary fix for "inconsistent successor" problem
         Approximates a waypoint to a waypoint in the shortest path if the waypoint is within resolution distance
@@ -727,8 +736,8 @@ class ThreadedDStarLite:
 
         for entry in self._waypoint_index.values():
             if entry['g'] != float('inf'): 
-                if entry['waypoint'].transform.location.distance(target.transform.location) <= self._dstar.resolution + 1.0:
-                   candidates.append(entry)
+                if entry['waypoint'].transform.location.distance(target.transform.location) < self._dstar.resolution + padding:
+                    candidates.append(entry)
 
         if len(candidates) > 0:
             candidates.sort(key=lambda x: x['g'])
@@ -763,6 +772,7 @@ class ThreadedDStarLite:
             if self._needs_replan.is_set():
                 self._needs_replan.clear()
                 self._planner_idle.clear()
+                self._visited = []
 
                 try:
                     trigger_obstacles = sorted(self._dstar.new_obst_wps.keys())
