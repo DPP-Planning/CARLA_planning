@@ -1,7 +1,10 @@
 import carla
 import random
 import time
+import threading
 from queue import PriorityQueue
+
+obstacles = []
 
 def euclidean_heuristic(waypoint, end_waypoint):
     return waypoint.transform.location.distance(end_waypoint.transform.location)
@@ -12,6 +15,115 @@ def manhattan_heuristic(waypoint, end_waypoint):
     dz = abs(waypoint.transform.location.z - end_waypoint.transform.location.z)
     return dx + dy + dz
 
+class ThreadedAStar:
+    def __init__(self, goal, vehicle, world):
+        self.goal = goal
+        self.world = world
+        self.map = self.world.get_map()
+        self.vehicle = vehicle
+
+        self._needs_replan = threading.Event()
+        self._stop_event = threading.Event()
+        self._planner_idle = threading.Event()
+        self._lock = threading.RLock()
+        self._planner_thread = None
+
+        self._plan = []
+        self._obstacle_snapshot = []
+
+    # Public API
+
+    def start(self):
+        print("[ThreadedAStar] Starting A Star")
+        self._stop_event.clear()
+        self._needs_replan.set()
+        self._planner_thread = threading.Thread(target=self._planner_loop, name="AStarThread", daemon=True)
+        self._planner_thread.start()
+
+    def done(self):
+        return self._stop_event.is_set()
+
+    def get_best_successor(self, waypoint: carla.Waypoint):
+        if waypoint.transform.location.distance(self.goal) < 1.0:
+            return None
+
+        with self._lock:
+            if len(self._plan) == 0:
+                return None
+
+            resolved_wp, resolved_idx = self._closest_plan_waypoint(waypoint)
+
+            if resolved_idx == len(self._plan) - 1:
+                return None
+            
+            return self._plan[resolved_idx + 1]
+
+    def set_obstacles(self, seen_obstacles_snapshot):
+        self._obstacle_snapshot = seen_obstacles_snapshot
+        self._needs_replan.set()
+        
+    # Private API
+
+    def _closest_plan_waypoint(self, target):
+        best = None
+        best_idx = None
+
+        best_cost = float('inf')
+
+        for p in range(len(self._plan)):
+            cost = self._plan[p].transform.location.distance(target.transform.location)
+            if cost < best_cost:
+                best = self._plan[p]
+                best_idx = p
+                best_cost = cost
+    
+        return (best, best_idx)
+
+    def _planner_loop(self):
+        while not self._stop_event.is_set():
+            try:
+                distance_from_goal = self.vehicle.get_location().distance(self.goal)
+            except Exception as e:
+                print("[ThreadedAStar] Vehicle destroyed. Stopping")
+                break
+
+            if distance_from_goal < 8.0:
+                print("[ThreadedAStar] Vehicle reached destination. Stopping")
+                self._stop_event.set()
+                continue
+            
+            if self._needs_replan.is_set():
+                print("[ThreadedAStar] Planning...")
+                self._needs_replan.clear()
+                self._planner_idle.clear()
+
+                try:
+                    start_wp = self.map.get_waypoint(
+                        self.vehicle.get_location()
+                    )
+                except Exception as e:
+                    print("[ThreadedAStar] Vehicle destroyed. Exiting.")
+                    self._stop_event.set()
+
+                goal_wp = self.map.get_waypoint(self.goal)
+                
+                print("[ThreadedAStar] Entering tracing.")
+                new_plan = a_star(
+                        start_wp, 
+                        goal_wp, 
+                        self.world, 
+                        self._obstacle_snapshot
+                    )
+                if new_plan: 
+                    print(f"[ThreadedAStar] Acquired plan of length {len(new_plan)}.")
+                else:
+                    print("[ThreadedAStar] Could not find route.")
+                
+                with self._lock:
+                    self._plan = new_plan if new_plan else []
+                    
+                self._planner_idle.set()
+                        
 class AStarNode:
     def __init__(self, waypoint, g_cost, h_cost, parent=None):
         self.waypoint = waypoint
@@ -20,10 +132,10 @@ class AStarNode:
         self.f_cost = g_cost + h_cost
         self.parent = parent
 
-def get_legal_neighbors(waypoint):
+def get_legal_neighbors(waypoint, resolution=1.0):
     neighbors = []
     # Forward neighbor
-    forward = waypoint.next(2.0)
+    forward = waypoint.next(resolution)
     if forward:
         neighbors.extend(forward)
     
@@ -32,35 +144,87 @@ def get_legal_neighbors(waypoint):
         left_lane = waypoint.get_left_lane()
         if left_lane and left_lane.lane_type == carla.LaneType.Driving:
             neighbors.append(left_lane)
-            neighbors.append(left_lane.next(2.0)[0])
+            neighbors.append(left_lane.next(resolution)[0])
     
     # Legal right lane change
     if waypoint.lane_change & carla.LaneChange.Right:
         right_lane = waypoint.get_right_lane()
         if right_lane and right_lane.lane_type == carla.LaneType.Driving:
             neighbors.append(right_lane)
-            neighbors.append(right_lane.next(2.0)[0])
+            neighbors.append(right_lane.next(resolution)[0])
     
     return neighbors
 
-def a_star(world, start_waypoint, end_waypoint, heuristic_func=euclidean_heuristic, max_distance=5000):
+def _near_obstacle(current_waypoint, seen_obstacles_snapshot, min_distance = 0.2):
+
+    agents_info = seen_obstacles_snapshot or []
+
+    for agent in agents_info:
+        actor = agent['actor']
+
+        if not actor.is_alive:
+            continue
+
+        obs_mesh = agent.get('mesh')
+        if obs_mesh and obs_mesh.contains_waypoint(current_waypoint, radius_m=min_distance):
+            return True
+
+    return False
+
+def _near_goal(current_waypoint, goal, min_distance = 30.0):
+    distance = goal.transform.location.distance(
+        current_waypoint.transform.location)
+    if distance < min_distance:
+        return True
+
+    return False
+
+def a_star(start_waypoint, end_waypoint, world, seen_obstacles_snapshot=None, heuristic_func=euclidean_heuristic, max_distance=5000):
+    global obstacles
+
+    world.debug.draw_string(start_waypoint.transform.location, "start", color=carla.Color(r=0, b=255, g=110), life_time=60.0)
+    world.debug.draw_string(end_waypoint.transform.location, "goal", color=carla.Color(r=110, b=255, g=0), life_time=60.0)
+
     start_node = AStarNode(start_waypoint, 0, heuristic_func(start_waypoint, end_waypoint))
     open_set = PriorityQueue()
     open_set.put((start_node.f_cost, id(start_node), start_node))
     came_from = {}
     g_score = {start_waypoint.id: 0}
     f_score = {start_waypoint.id: start_node.f_cost}
+    nodes_expanded = 0
+    goal_threshold = 3.5
+    goal_threshold_increased = goal_threshold * 2.0
+    nodes_limit = 20000
     
     while not open_set.empty():
         current_node = open_set.get()[2]
+
+        if _near_goal(current_node.waypoint, end_waypoint) and _near_obstacle(current_node.waypoint, seen_obstacles_snapshot):
+            goal_threshold = goal_threshold_increased
+            print(goal_threshold)
         
         # Early exit if we have reached near the goal
-        if current_node.waypoint.transform.location.distance(end_waypoint.transform.location) < 2.0:
+        if current_node.waypoint.transform.location.distance(end_waypoint.transform.location) < goal_threshold:
             path = []
 
             while current_node:
                 path.append(current_node.waypoint)
                 current_node = came_from.get(current_node.waypoint.id)
+            # for k, v in f_score.items():
+            #     print (k, ",", v)
+
+            # i = 0
+            # for w in list(reversed(path)):
+            #         # print(w[0].transform.location.x, ",",w[0].transform.location.y, w[1])
+            #     if i % 10 == 0:
+            #         world.debug.draw_string(w.transform.location, f'{g_score[w.id]}', draw_shadow=True,
+            #         color=carla.Color(r=255, g=255, b=255), life_time=120.0,
+            #         persistent_lines=True)
+            #     else:
+            #         world.debug.draw_string(w.transform.location, f'{g_score[w.id]}', draw_shadow=True,
+            #         color = carla.Color(r=255, g=255, b=255), life_time=60.0,
+            #         persistent_lines=True)
+            #     i += 1
             return list(reversed(path))
         
         # Unlikely to happen. left here for debugging purposes
@@ -69,8 +233,12 @@ def a_star(world, start_waypoint, end_waypoint, heuristic_func=euclidean_heurist
         #     return None
         
         for next_waypoint in get_legal_neighbors(current_node.waypoint):
+            nodes_expanded += 1
+            if nodes_expanded > nodes_limit:
+                return None
+            # world.debug.draw_string(next_waypoint.transform.location, '^', draw_shadow=False, color=carla.Color(r=220, g=0, b=220), life_time=60.0, persistent_lines=True)
             # Add a small cost for lane changes
-            lane_change_cost = 0 if next_waypoint.lane_id != current_node.waypoint.lane_id else 0
+            lane_change_cost = 0  if next_waypoint.lane_id != current_node.waypoint.lane_id else 0
 
             # tentative = g score + heuristic + lane change cost
             # This sum gives us the total cost to reach the next waypoint from the start,
@@ -78,11 +246,15 @@ def a_star(world, start_waypoint, end_waypoint, heuristic_func=euclidean_heurist
             # The f_score is considered at the end of the algorithm.
             # Therefore, this is g_score and not f_score
             tentative_g_score = g_score[current_node.waypoint.id] + euclidean_heuristic(current_node.waypoint, next_waypoint) + lane_change_cost
+
+            #Distance to determine how far obstacles are
+            if _near_obstacle(next_waypoint, seen_obstacles_snapshot):
+                tentative_g_score = float('inf')
             # If the next waypoint is already in the open set, we can skip it
             # Comparing g_score for the reason above tentative_g_score.
-            if next_waypoint.id not in g_score or tentative_g_score < g_score[next_waypoint.id]:
+            if next_waypoint.id not in g_score or tentative_g_score < g_score[next_waypoint.id] or tentative_g_score == float('inf'):
                 # Draws the possible routes A* checked
-                world.debug.draw_string(next_waypoint.transform.location, '^', draw_shadow=False, color=carla.Color(r=0, g=220, b=0), life_time=25.0, persistent_lines=True)
+                # world.debug.draw_string(next_waypoint.transform.location, '^', draw_shadow=False, color=carla.Color(r=0, g=220, b=0), life_time=25.0, persistent_lines=True)
                 
                 came_from[next_waypoint.id] = current_node
                 
@@ -98,7 +270,7 @@ def a_star(world, start_waypoint, end_waypoint, heuristic_func=euclidean_heurist
 def main():
     try:
         # Connect to the CARLA server
-        client = carla.Client('localhost', 2000)
+        client = carla.Client('localhost', 4000)
         client.set_timeout(10.0)
         # world = client.load_world('Town05') # Use this to switch towns
         # Get the world and map
@@ -113,12 +285,10 @@ def main():
 
         # Choose a random starting location (point A)
         point_a = random.choice(spawn_points)
-        point_a = spawn_points[50]
         firetruck = world.spawn_actor(firetruck_bp, point_a)
 
         # Choose a random destination (point B)
         point_b = random.choice(spawn_points)
-        point_b = spawn_points[100]
         while point_b.location == point_a.location:
             point_b = random.choice(spawn_points)
 
@@ -153,9 +323,11 @@ def main():
         # End of manual waypoint selection
         print(f"Point A wp: {start_waypoint}")
         print(f"Point B wp: {end_waypoint}")
+        
+
 
         # Run A*
-        route = a_star(world, start_waypoint, end_waypoint)
+        route = a_star(start_waypoint, end_waypoint)
 
         if route is None:
             # To prevent infinite loop
