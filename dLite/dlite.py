@@ -569,6 +569,7 @@ class ThreadedDStarLite:
             self._planner_thread.join(timeout=join_timeout)
 
     def set_obstacles(self, seen_obstacles_snapshot):
+        print("[ThreadedDStarLite] Updating Obstacle Perception")
         snapshot_waypoints = [self._dstar._closest_generated_waypoint(self._dstar.map.get_waypoint(x['location'])) for x in seen_obstacles_snapshot]
         snapshot_ids = [x.id for x in snapshot_waypoints]
 
@@ -666,8 +667,8 @@ class ThreadedDStarLite:
         if current_waypoint.transform.location.distance(self._dstar.goal.transform.location) < 1.0:
             return None
 
-        if current_waypoint.transform.location.distance(self._dstar.start.transform.location) < 2.0:
-            current_waypoint = self._dstar.start
+        #if current_waypoint.transform.location.distance(self._dstar.start.transform.location) < 3.0:
+            #current_waypoint = self._approximate_wp_by_index(current_waypoint, padding=2.0)
 
         with self._lock:
             try:
@@ -770,6 +771,7 @@ class ThreadedDStarLite:
                 continue
 
             if self._needs_replan.is_set():
+                print(f"[ThreadedDStarLite] Planning...")
                 self._needs_replan.clear()
                 self._planner_idle.clear()
                 self._visited = []
@@ -805,6 +807,8 @@ class ThreadedDStarLite:
                         self._cost_update_obstacles()
                         self._cost_update_cleared()
                         self._dstar.compute_shortest_path()
+
+                    print(f"[ThreadedDStarLite] Finished computing shortest path. Entering idle.")
 
                     self._dstar.new_obst_wps = {}
                     self._dstar.cleared_obst_wps = {}

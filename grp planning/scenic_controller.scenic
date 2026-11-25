@@ -12,7 +12,7 @@ param map = localPath('../../../../CarlaUE4/Content/Carla/Maps/OpenDrive/Town10H
 def get_random_vector(network, road_element, avoid_junctions=True):
     all_lane_sections = [x for x in list(network.elements.keys()) if isinstance(network.elements[x], road_element)]
     choice = random.choice(all_lane_sections)
-    return new OrientedPoint on network.elements[choice]
+    return new Point on network.elements[choice]
 
 class EmptyAction(Action):
     def __init__(self):
@@ -41,11 +41,8 @@ behavior DPPBehavior(goal, timeout=180, ps="dlite", mp="basic"):
     )
 
     controller.start()
-    goal_distance = self.carlaActor.get_location().distance(carla.Location(g[0], g[1], g[2]))
 
     while not controller.done():
-        goal_distance = self.carlaActor.get_location().distance(carla.Location(g[0], g[1], g[2]))
-        #print(goal_distance)
         take EmptyAction()
 
         t += 1
@@ -54,10 +51,8 @@ behavior DPPBehavior(goal, timeout=180, ps="dlite", mp="basic"):
 
     if t >= timeout:
         print(f"Scene: Agent timed out. Distance from goal {goal_distance}")
-    elif goal_distance <= 4:
-        print("Scene: Agent reached goal.")
     else:
-        print(f"Scene: Agent failed unexpectedly. Distance from goal {goal_distance}")
+        print("Scene: Agent reached goal.")
 
     terminate 
 

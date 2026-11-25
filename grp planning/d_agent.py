@@ -98,6 +98,7 @@ class BasicAgentD(BasicAgent):
 
         self._agent_thread = None
         self._stop_event = threading.Event()
+        self._blocked = threading.Event()
 
         self._dt = 1.0 / 20.0
         self._target_speed = 20.0
@@ -129,6 +130,7 @@ class BasicAgentD(BasicAgent):
     def start(self, start_thread=True):
         self._init_controller()
         self._stop_event.clear()
+        self._blocked.clear()
         if start_thread:
             self._agent_thread = threading.Thread(target=self._agent_loop, name="MotionPlannerThread", daemon=True)
             self._agent_thread.start()
@@ -145,9 +147,11 @@ class BasicAgentD(BasicAgent):
         """
         self._debug = False
 
-        ext_padding = 2.0
-        min_obs_distance = max(self._vehicle.bounding_box.extent.x + ext_padding, self._vehicle.bounding_box.extent.y + ext_padding)
-        consumption_range = self._sampling_radius + 1.0
+        obey_traffic_lights = False
+        obs_radius_padding = 1.5
+        cons_radius_padding = 1.0
+        min_obs_distance = max(self._vehicle.bounding_box.extent.x, self._vehicle.bounding_box.extent.y) + obs_radius_padding
+        consumption_range = self._sampling_radius + cons_radius_padding
 
         if self._debug: print("entered run_step")
         if self._vehicle.get_location().distance(self._destination) < 3.5: self._stop_event.set()
@@ -155,14 +159,21 @@ class BasicAgentD(BasicAgent):
         in_junction = self._map.get_waypoint(self._vehicle.get_location()).is_junction
         hazard_obstacle = False
         hazard_light = False
+        changed_perception = False
         vehicle_speed = get_speed(self._vehicle) / 5
 
         self._tick_seen_obstacles()
 
+        snapshot = self._get_seen_obstacles_snapshot()
+
+        if [self._map.get_waypoint(entry['location']).id for entry in snapshot] != self._last_snap:
+            changed_perception = True
+            self._blocked.clear()
+
         if self.last_wp is None:
             self.last_wp = self._map.get_waypoint(self._vehicle.get_location())
 
-        if len(self._queue) <= self._q_max // 2:
+        if len(self._queue) <= self._q_max // 2 and not self._blocked.is_set():
             self._get_next_waypoints()
 
         if len(self._queue) == 0:
@@ -183,24 +194,7 @@ class BasicAgentD(BasicAgent):
             self.last_wp = target_wp
             self._queue.popleft()
 
-        #min_vehicle_distance = 25
-        #ego_location = self._vehicle.get_location()
-        #path_blocked_by_bbox = False
-        #blocking_candidates = []
-
         plan_waypoints = [wp for wp in self._queue]
-        snapshot = self._get_seen_obstacles_snapshot()
-
-        if self._last_snap is not None:
-            previous_actors = [x['actor'].id for x in self._last_snap]
-            new_actors = [x['actor'].id for x in snapshot]
-            changed_positions = any([x['position_changed'] for x in snapshot])
-            if previous_actors != new_actors or changed_positions:
-                if not in_junction: self._search.set_obstacles(snapshot)
-            self._last_snap = snapshot
-        else:
-            self._search.set_obstacles(snapshot)
-            self._last_snap = snapshot
 
         if len(plan_waypoints) > 0:
             for obs_data in snapshot:
@@ -218,73 +212,20 @@ class BasicAgentD(BasicAgent):
 
                 plan_waypoints.sort(key=lambda x: x.transform.location.distance(obs_wpt.transform.location))
 
-                # if plan_waypoints[0].transform.location.distance(obs_wpt.transform.location) <= max(self._vehicle.bounding_box.extent.x, self._vehicle.bounding_box.extent.y):
-                #     hazard_obstacle = True
-                #     blocked_plan_wp = plan_waypoints[0]
-                #     self._blockers[obs_wpt.id] = []
-                #     for p in plan_waypoints: 
-                #         if p.transform.location.distance(blocked_plan_wp.transform.location) <= 10:
-                #             blocking_candidates.append(p)
-                #             self._blockers[obs_wpt.id].append(p)
-
-                same_lane = plan_waypoints[0].lane_id == obs_wpt.lane_id
-                if plan_waypoints[0].transform.location.distance(obs_wpt.transform.location) < min_obs_distance and same_lane:
+                obstacle_dist = plan_waypoints[0].transform.location.distance(obs_wpt.transform.location)
+                if obstacle_dist < min_obs_distance:
                     hazard_obstacle = True
             
-            # if hazard_obstacle:
-            #     self._search.set_obstacles(self._get_seen_obstacles_snapshot())
-
-        # Check if the vehicle is affected by a red traffic light
-        # max_tlight_distance = self._base_tlight_threshold + self._speed_ratio * vehicle_speed
-        # affected_by_tlight, _ = self._affected_by_traffic_light(self._lights_list, max_tlight_distance)
-        # if affected_by_tlight:
-        #     hazard_light = True
+        max_tlight_distance = self._base_tlight_threshold + self._speed_ratio * vehicle_speed
+        affected_by_tlight, _ = self._affected_by_traffic_light(self._lights_list, max_tlight_distance)
+        if affected_by_tlight and obey_traffic_lights:
+            hazard_light = True
 
         if hazard_obstacle or hazard_light:
             control = self.add_emergency_stop(control)
 
         if hazard_obstacle and not in_junction:
             self._queue.clear()
-
-        # if hazard_obstacle and hazard_light:
-        #     control = self.add_emergency_stop(control)
-        # elif hazard_obstacle:
-        #     if self._debug: print(" - hazard detected, correcting...")
-
-        #     adjacent_lane_blocked = False
-        #     for b in blocking_candidates:
-        #         if self._adjacent_lane_waypoints_blocked(b):
-        #             adjacent_lane_blocked = True
-        #             break
-
-        #     if blocking_candidates and adjacent_lane_blocked:
-
-        #         # If obstacle cannot be navigated around, stop.
-
-        #         if self._debug: print(" - adjacent lane waypoint(s) blocked near obstacle. Emergency stopping.")
-        #         control = self.add_emergency_stop(control)
-
-        #     elif blocking_candidates and (self._previous_obstacle is None or set([w.id for w in blocking_candidates]) != self._previous_obstacle):
-        #         if self._debug: print(" - sending obstacles to dlite")
-
-        #         # If obstacle can be navigated around
-        #         # 1. Send obstacles and a replan request to D*
-        #         # 2. Clear queued waypoints.
-
-        #         for candidate in blocking_candidates:
-        #             self._search.signal_obstacle(candidate.transform.location)
-
-        #         self._previous_obstacle = set([w.id for w in blocking_candidates])
-        #         self._queue.clear()
-
-        #         for candidate in blocking_candidates:
-        #             self._world.debug.draw_string(candidate.transform.location, 'Obstacle', draw_shadow=False,
-        #             color=carla.Color(r=255, g=0, b=0), life_time=5.0,
-        #             persistent_lines=True)
-
-        #         control = self.add_emergency_stop(control)
-        #     elif blocking_candidates:
-        #         control = self.add_emergency_stop(control)
 
         return control
 
@@ -331,23 +272,21 @@ class BasicAgentD(BasicAgent):
 
         distance_from_goal = self._vehicle.get_location().distance(self._destination)
 
-        # try:
-        while not self._stop_event.is_set():
+        try:
+            while not self._stop_event.is_set():
 
-            distance_from_goal = self._vehicle.get_location().distance(self._destination)
+                distance_from_goal = self._vehicle.get_location().distance(self._destination)
 
-            if not self._vehicle.is_alive:
+                if not self._vehicle.is_alive:
+                    self._stop_event.set()
+                    print("[BasicAgentD] agent vehicle died unexpectedly")
+
+                else:
+                    control_signal = self.run_step()
+                    self._vehicle.apply_control(control_signal)    
+        except Exception as e:
                 self._stop_event.set()
-                print("[BasicAgentD] agent vehicle died unexpectedly")
-
-            else:
-                control_signal = self.run_step()
-                self._vehicle.apply_control(control_signal)
-            
-        # except Exception as e:
-        #         self._stop_event.set()
-        #         print(e)
-        #         print("[BasicAgentD] run_step() error:", e)
+                print("[BasicAgentD] run_step() error. Terminating.")
 
         print("[BasicAgentD] motion planner terminated")
 
@@ -377,11 +316,14 @@ class BasicAgentD(BasicAgent):
 
             self._queue.append(succ)
 
-            self._world.debug.draw_string(succ.transform.location, "*", color=carla.Color(r=0, g=255, b=0), life_time=1.0)
+            #self._world.debug.draw_string(succ.transform.location, "*", color=carla.Color(r=0, g=255, b=0), life_time=0.0)
 
             visited.add(succ.id)
             current_waypoint = succ
             i += 1
+
+        if i == 0:
+            self._blocked.set()
 
     def _update_obstacles(self):
         """

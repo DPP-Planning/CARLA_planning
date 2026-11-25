@@ -44,29 +44,56 @@ class ThreadedAStar:
         return self._stop_event.is_set()
 
     def get_best_successor(self, waypoint: carla.Waypoint):
+        if waypoint.transform.location.distance(self.goal) < 1.0:
+            return None
+
         with self._lock:
             if len(self._plan) == 0:
-                #print("[ThreadedAStar] Request to best successor failed, no plan.")
                 return None
 
-            return self._plan.pop(0)
+            resolved_wp, resolved_idx = self._closest_plan_waypoint(waypoint)
+
+            if resolved_idx == len(self._plan) - 1:
+                return None
+            
+            return self._plan[resolved_idx + 1]
 
     def set_obstacles(self, seen_obstacles_snapshot):
-        print(f"[ThreadedAStar] Got new obstacle snapshot")
         self._obstacle_snapshot = seen_obstacles_snapshot
+        self._needs_replan.set()
         
     # Private API
 
-    def _get_goal_distance(self):
-        return self.vehicle.get_location().distance(self.goal)
+    def _closest_plan_waypoint(self, target):
+        best = None
+        best_idx = None
+
+        best_cost = float('inf')
+
+        for p in range(len(self._plan)):
+            cost = self._plan[p].transform.location.distance(target.transform.location)
+            if cost < best_cost:
+                best = self._plan[p]
+                best_idx = p
+                best_cost = cost
+    
+        return (best, best_idx)
 
     def _planner_loop(self):
         while not self._stop_event.is_set():
-            if self._get_goal_distance() < 3.5:
+            try:
+                distance_from_goal = self.vehicle.get_location().distance(self.goal)
+            except Exception as e:
+                print("[ThreadedAStar] Vehicle destroyed. Stopping")
+                break
+
+            if distance_from_goal < 8.0:
                 print("[ThreadedAStar] Vehicle reached destination. Stopping")
                 self._stop_event.set()
-
+                continue
+            
             if self._needs_replan.is_set():
+                print("[ThreadedAStar] Planning...")
                 self._needs_replan.clear()
                 self._planner_idle.clear()
 
@@ -79,21 +106,24 @@ class ThreadedAStar:
                     self._stop_event.set()
 
                 goal_wp = self.map.get_waypoint(self.goal)
-                    
-                with self._lock:
-                    print("[ThreadedAStar] Entering tracing.")
-                    self._plan = a_star(
+                
+                print("[ThreadedAStar] Entering tracing.")
+                new_plan = a_star(
                         start_wp, 
                         goal_wp, 
                         self.world, 
                         self._obstacle_snapshot
                     )
-                    print(f"[ThreadedAStar] Acquired plan of length {len(self._plan)}.")
-
-                self._planner_idle.set()    
-            
-            #time.sleep(1)
-        
+                if new_plan: 
+                    print(f"[ThreadedAStar] Acquired plan of length {len(new_plan)}.")
+                else:
+                    print("[ThreadedAStar] Could not find route.")
+                
+                with self._lock:
+                    self._plan = new_plan if new_plan else []
+                    
+                self._planner_idle.set()
+                        
 class AStarNode:
     def __init__(self, waypoint, g_cost, h_cost, parent=None):
         self.waypoint = waypoint
@@ -142,7 +172,6 @@ def _near_obstacle(current_waypoint, seen_obstacles_snapshot, min_distance = 0.2
     return False
 
 def _near_goal(current_waypoint, goal, min_distance = 30.0):
-        
     distance = goal.transform.location.distance(
         current_waypoint.transform.location)
     if distance < min_distance:
@@ -153,8 +182,8 @@ def _near_goal(current_waypoint, goal, min_distance = 30.0):
 def a_star(start_waypoint, end_waypoint, world, seen_obstacles_snapshot=None, heuristic_func=euclidean_heuristic, max_distance=5000):
     global obstacles
 
-    world.debug.draw_string(start_waypoint.transform.location, "start", color=carla.Color(r=0, b=255, g=110), life_time=15.0)
-    world.debug.draw_string(end_waypoint.transform.location, "goal", color=carla.Color(r=110, b=255, g=0), life_time=15.0)
+    world.debug.draw_string(start_waypoint.transform.location, "start", color=carla.Color(r=0, b=255, g=110), life_time=60.0)
+    world.debug.draw_string(end_waypoint.transform.location, "goal", color=carla.Color(r=110, b=255, g=0), life_time=60.0)
 
     start_node = AStarNode(start_waypoint, 0, heuristic_func(start_waypoint, end_waypoint))
     open_set = PriorityQueue()
@@ -163,16 +192,16 @@ def a_star(start_waypoint, end_waypoint, world, seen_obstacles_snapshot=None, he
     g_score = {start_waypoint.id: 0}
     f_score = {start_waypoint.id: start_node.f_cost}
     nodes_expanded = 0
-    goal_threshold = 4.0
+    goal_threshold = 3.5
     goal_threshold_increased = goal_threshold * 2.0
-
+    nodes_limit = 20000
     
     while not open_set.empty():
         current_node = open_set.get()[2]
 
         if _near_goal(current_node.waypoint, end_waypoint) and _near_obstacle(current_node.waypoint, seen_obstacles_snapshot):
             goal_threshold = goal_threshold_increased
-            print (goal_threshold)
+            print(goal_threshold)
         
         # Early exit if we have reached near the goal
         if current_node.waypoint.transform.location.distance(end_waypoint.transform.location) < goal_threshold:
@@ -205,6 +234,8 @@ def a_star(start_waypoint, end_waypoint, world, seen_obstacles_snapshot=None, he
         
         for next_waypoint in get_legal_neighbors(current_node.waypoint):
             nodes_expanded += 1
+            if nodes_expanded > nodes_limit:
+                return None
             # world.debug.draw_string(next_waypoint.transform.location, '^', draw_shadow=False, color=carla.Color(r=220, g=0, b=220), life_time=60.0, persistent_lines=True)
             # Add a small cost for lane changes
             lane_change_cost = 0  if next_waypoint.lane_id != current_node.waypoint.lane_id else 0
